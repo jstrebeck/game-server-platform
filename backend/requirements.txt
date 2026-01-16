@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+kubernetes
+python-dotenv
+pydantic
+websockets
+python-jose[cryptography]
+httpx
