@@ -90,7 +90,7 @@ metadata:
   name: watch2play-backend
   namespace: watch2play
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: watch2play-backend
   ports:
