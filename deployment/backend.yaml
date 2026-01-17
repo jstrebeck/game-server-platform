@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: watch2play-backend-secret
+  namespace: watch2play
+type: Opaque
+stringData:
+  AUTH0_DOMAIN: dev-86acntfmvqywrg0y.us.auth0.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: watch2play-backend
+  namespace: watch2play
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: watch2play-backend
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["create", "delete", "get", "list"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["create", "delete", "get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["create", "delete", "get", "list", "patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: watch2play-backend
+subjects:
+- kind: ServiceAccount
+  name: watch2play-backend
+  namespace: watch2play
+roleRef:
+  kind: ClusterRole
+  name: watch2play-backend
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watch2play-backend
+  labels:
+    app: watch2play-backend
+  namespace: watch2play
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: watch2play-backend
+  template:
+    metadata:
+      labels:
+        app: watch2play-backend
+    spec:
+      serviceAccountName: watch2play-backend
+      containers:
+      - name: watch2play-backend
+        image: 192.168.2.203:5000/watch2play-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: AUTH0_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: AUTH0_DOMAIN
+        - name: AUTH0_AUDIENCE
+          value: "https://api.watch2play.local"
+        - name: AUTH0_ALGORITHMS
+          value: "RS256"
+        - name: ALLOWED_ORIGINS
+          value: "http://192.168.2.202:3000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: watch2play-backend
+  namespace: watch2play
+spec:
+  type: LoadBalancer
+  selector:
+    app: watch2play-backend
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+

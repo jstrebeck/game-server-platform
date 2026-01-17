@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: watch2play-frontend-config
+  namespace: watch2play
+data:
+  APP_BASE_URL: "http://192.168.2.202:3000"
+  AUTH0_DOMAIN: "dev-86acntfmvqywrg0y.us.auth0.com"
+  AUTH0_AUDIENCE: "https://api.watch2play.local"
+  NEXT_PUBLIC_API_URL: "http://192.168.2.205:8000"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watch2play-frontend
+  labels:
+    app: watch2play-frontend
+  namespace: watch2play
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: watch2play-frontend
+  template:
+    metadata:
+      labels:
+        app: watch2play-frontend
+    spec:
+      containers:
+      - name: watch2play-frontend
+        image: 192.168.2.203:5000/watch2play-frontend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+        env:
+        # Secrets
+        - name: AUTH0_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-frontend-secret
+              key: AUTH0_SECRET
+        - name: AUTH0_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-frontend-secret
+              key: AUTH0_CLIENT_ID
+        - name: AUTH0_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-frontend-secret
+              key: AUTH0_CLIENT_SECRET
+        # ConfigMap values
+        - name: APP_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: watch2play-frontend-config
+              key: APP_BASE_URL
+        - name: AUTH0_DOMAIN
+          valueFrom:
+            configMapKeyRef:
+              name: watch2play-frontend-config
+              key: AUTH0_DOMAIN
+        - name: AUTH0_AUDIENCE
+          valueFrom:
+            configMapKeyRef:
+              name: watch2play-frontend-config
+              key: AUTH0_AUDIENCE
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: watch2play-frontend
+  namespace: watch2play
+spec:
+  type: LoadBalancer
+  selector:
+    app: watch2play-frontend
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+
