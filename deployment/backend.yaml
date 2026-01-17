@@ -82,7 +82,7 @@ spec:
         - name: AUTH0_ALGORITHMS
           value: "RS256"
         - name: ALLOWED_ORIGINS
-          value: "http://192.168.2.202:3000"
+          value: "http://watch2play"
 ---
 apiVersion: v1
 kind: Service
@@ -95,6 +95,6 @@ spec:
     app: watch2play-backend
   ports:
   - name: http
-    port: 8000
+    port: 80
     targetPort: 8000
 

@@ -4,10 +4,10 @@ metadata:
   name: watch2play-frontend-config
   namespace: watch2play
 data:
-  APP_BASE_URL: "http://192.168.2.202:3000"
+  APP_BASE_URL: "http://watch2play"
   AUTH0_DOMAIN: "dev-86acntfmvqywrg0y.us.auth0.com"
   AUTH0_AUDIENCE: "https://api.watch2play.local"
-  NEXT_PUBLIC_API_URL: "http://192.168.2.205:8000"
+  NEXT_PUBLIC_API_URL: "http://192.168.2.202"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -77,6 +77,5 @@ spec:
     app: watch2play-frontend
   ports:
   - name: http
-    port: 3000
+    port: 80
     targetPort: 3000
-
