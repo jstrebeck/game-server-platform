@@ -10,7 +10,7 @@ data:
     bind = "0.0.0.0:25565"
     motd = "Watch2Play Minecraft Network"
     show-max-players = 100
-    online-mode = false
+    online-mode = true
     force-key-authentication = false
     prevent-client-proxy-connections = false
     player-info-forwarding-mode = "modern"
@@ -52,6 +52,11 @@ data:
     show-plugins = false
 
   forwarding.secret: "REDACTED"
+  rcon.yml: |
+    enable: true
+    host: 127.0.0.1
+    port: 25575
+    password: "REDACTED"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -80,7 +85,7 @@ spec:
       initContainers:
       - name: copy-config
         image: busybox:latest
-        command: ['sh', '-c', 'cp /config/velocity.toml /server/ && cp /config/forwarding.secret /server/']
+        command: ['sh', '-c', 'cp /config/velocity.toml /server/ && cp /config/forwarding.secret /server/ && mkdir -p /server/plugins/velocircon && cp /config/rcon.yml /server/plugins/velocircon/']
         volumeMounts:
         - name: config
           mountPath: /config
@@ -97,6 +102,10 @@ spec:
           value: "VELOCITY"
         - name: MEMORY
           value: "512M"
+        - name: PLUGINS
+          value: "https://github.com/TCPShield/RealIP/releases/download/2.8.1/TCPShield-2.8.1.jar,https://cdn.modrinth.com/data/KkmSfl3v/versions/fSM522rY/Velocircon-1.0.5.jar"
+        - name: RCON_PASSWORD
+          value: "REDACTED"
         volumeMounts:
         - name: server-data
           mountPath: /server
