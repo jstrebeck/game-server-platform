@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velocity-config
+  namespace: watch2play
+data:
+  velocity.toml: |
+    # Velocity Configuration
+    config-version = "2.7"
+    bind = "0.0.0.0:25565"
+    motd = "Watch2Play Minecraft Network"
+    show-max-players = 100
+    online-mode = false
+    force-key-authentication = false
+    prevent-client-proxy-connections = false
+    player-info-forwarding-mode = "modern"
+    forwarding-secret-file = "forwarding.secret"
+    announce-forge = false
+    kick-existing-players = false
+    ping-passthrough = "DISABLED"
+
+    [servers]
+    # Servers are managed dynamically via ConfigMap updates
+    # Format: server-name = "address:port"
+
+    try = []
+
+    [forced-hosts]
+    # Hostname -> server mapping
+    # Format: "hostname" = ["server-name"]
+    # These are managed dynamically by the backend
+
+    [advanced]
+    compression-threshold = 256
+    compression-level = -1
+    login-ratelimit = 3000
+    connection-timeout = 5000
+    read-timeout = 30000
+    haproxy-protocol = false
+    tcp-fast-open = false
+    bungee-plugin-message-channel = true
+    show-ping-requests = false
+    failover-on-unexpected-server-disconnect = true
+    announce-proxy-commands = true
+    log-command-executions = false
+    log-player-connections = true
+
+    [query]
+    enabled = false
+    port = 25565
+    map = "Velocity"
+    show-plugins = false
+
+  forwarding.secret: "REDACTED"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velocity
+  namespace: watch2play
+  labels:
+    app: velocity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: velocity
+  template:
+    metadata:
+      labels:
+        app: velocity
+      annotations:
+        # Force pod restart when ConfigMap changes
+        configmap-hash: "initial"
+    spec:
+      tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+      initContainers:
+      - name: copy-config
+        image: busybox:latest
+        command: ['sh', '-c', 'cp /config/velocity.toml /server/ && cp /config/forwarding.secret /server/']
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: server-data
+          mountPath: /server
+      containers:
+      - name: velocity
+        image: itzg/mc-proxy:latest
+        ports:
+        - containerPort: 25565
+          name: minecraft
+        env:
+        - name: TYPE
+          value: "VELOCITY"
+        - name: MEMORY
+          value: "512M"
+        volumeMounts:
+        - name: server-data
+          mountPath: /server
+        resources: {}
+      volumes:
+      - name: config
+        configMap:
+          name: velocity-config
+      - name: server-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: velocity
+  namespace: watch2play
+spec:
+  type: LoadBalancer
+  selector:
+    app: velocity
+  ports:
+  - name: minecraft
+    port: 25565
+    targetPort: 25565

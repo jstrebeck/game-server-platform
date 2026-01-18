@@ -7,6 +7,18 @@ import { useAccessToken } from '@/components/AccessTokenProvider'
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const WS_URL = API_URL.replace(/^http/, 'ws')
 
+// Check if JWT token is expired
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    const exp = payload.exp * 1000 // Convert to milliseconds
+    // Consider expired if less than 30 seconds remaining
+    return Date.now() > exp - 30000
+  } catch {
+    return true
+  }
+}
+
 export default function Home() {
   const { user, isLoading: authLoading } = useUser()
   const { getAccessToken } = useAccessToken()
@@ -43,9 +55,26 @@ export default function Home() {
 
   // Helper function for authenticated API calls
   async function fetchWithAuth(url: string, options: RequestInit = {}) {
-    const token = await getAccessToken()
+    let token = await getAccessToken()
+
     if (!token) {
+      // No token, redirect to login
+      window.location.href = '/auth/login'
       throw new Error('Not authenticated')
+    }
+
+    // Check if token is expired
+    if (isTokenExpired(token)) {
+      console.log('Token expired, requesting fresh token...')
+      // Token expired, force a fresh token fetch
+      token = await getAccessToken(true)
+
+      if (!token || isTokenExpired(token)) {
+        // Still expired, redirect to login
+        console.log('Could not refresh token, redirecting to login...')
+        window.location.href = '/auth/login'
+        throw new Error('Session expired')
+      }
     }
 
     return fetch(url, {
@@ -213,6 +242,37 @@ export default function Home() {
     } catch (err) {
       console.error('Error stopping server:', err)
       setError('Failed to stop server. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function deleteServer() {
+    if (!confirm('Are you sure you want to delete your server? This action cannot be undone.')) {
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+    disconnectLogs()
+
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver`, {
+        method: 'DELETE',
+      })
+
+      if (!res.ok) {
+        setError(`Failed to delete server (Error ${res.status})`)
+        return
+      }
+
+      const data = await res.json()
+      console.log('Delete response:', data)
+      setResult(null)
+      setError(null)
+    } catch (err) {
+      console.error('Error deleting server:', err)
+      setError('Failed to delete server. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -387,20 +447,29 @@ export default function Home() {
                 <span className={`px-3 py-1 rounded-full text-xs font-medium ${
                   result.status === 'ready'
                     ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                    : result.status === 'stopped'
+                    ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
                     : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
                 }`}>
-                  {result.status === 'ready' ? '● Ready' : '● Provisioning'}
+                  {result.status === 'ready' ? '● Ready' : result.status === 'stopped' ? '● Stopped' : '● Starting'}
                 </span>
               </div>
 
               <div className="space-y-3 mb-4">
-                <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
-                  <span className="text-slate-400 text-sm">IP Address</span>
-                  <span className="font-mono text-indigo-400 font-medium">{result.ip}</span>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
-                  <span className="text-slate-400 text-sm">Port</span>
-                  <span className="font-mono text-indigo-400 font-medium">{result.port}</span>
+                <div className="p-3 bg-slate-800/50 rounded-lg">
+                  <span className="text-slate-400 text-sm block mb-1">Connect with</span>
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-indigo-400 font-medium">{result.hostname}:{result.port}</span>
+                    <button
+                      onClick={() => navigator.clipboard.writeText(`${result.hostname}:${result.port}`)}
+                      className="text-slate-400 hover:text-white transition-colors p-1"
+                      title="Copy to clipboard"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
                 <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
                   <span className="text-slate-400 text-sm">Namespace</span>
@@ -450,6 +519,18 @@ export default function Home() {
                   )}
                 </button>
               </div>
+
+              {/* Delete Button */}
+              <button
+                onClick={deleteServer}
+                disabled={loading}
+                className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-red-900/50 border border-slate-700 hover:border-red-500/50 disabled:bg-slate-800 disabled:cursor-not-allowed text-slate-400 hover:text-red-400 text-sm font-medium transition-all duration-200 flex items-center justify-center gap-2 mb-4"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                Delete Server
+              </button>
 
               {!showLogs && (
                 <button
