@@ -44,7 +44,7 @@ class VelocityManager:
         )
 
     def _reload_velocity(self):
-        """Reload Velocity config by copying updated config and sending reload command"""
+        """Reload Velocity config by copying updated config and sending reload command via RCON"""
         v1 = client.CoreV1Api()
 
         # Find the Velocity pod
@@ -86,11 +86,10 @@ class VelocityManager:
             logger.error(f"Failed to update config in pod: {e}")
             return
 
-        # Send reload command to Velocity console
-        # Velocity uses 'velocity reload' command
-        exec_command = ['sh', '-c', 'echo "velocity reload" > /proc/1/fd/0']
+        # Send reload command to Velocity via RCON
+        exec_command = ['rcon-cli', 'velocity reload']
         try:
-            stream(
+            result = stream(
                 v1.connect_get_namespaced_pod_exec,
                 pod_name,
                 VELOCITY_NAMESPACE,
@@ -101,9 +100,9 @@ class VelocityManager:
                 stdout=True,
                 tty=False
             )
-            logger.info(f"Sent reload command to Velocity")
+            logger.info(f"Sent reload command to Velocity via RCON: {result}")
         except Exception as e:
-            logger.warning(f"Could not send reload command: {e}")
+            logger.warning(f"Could not send reload command via RCON: {e}")
 
         logger.info(f"Reloaded Velocity config without restart")
 
@@ -134,17 +133,9 @@ class VelocityManager:
                 new_lines.append(line)
             velocity_toml = '\n'.join(new_lines)
 
-        # Add to try list
-        try_pattern = r'try = \[(.*?)\]'
-        try_match = re.search(try_pattern, velocity_toml)
-        if try_match:
-            current_try = try_match.group(1).strip()
-            if f'"{server_name}"' not in current_try:
-                if current_try:
-                    new_try = f'[{current_try}, "{server_name}"]'
-                else:
-                    new_try = f'["{server_name}"]'
-                velocity_toml = re.sub(try_pattern, f'try = {new_try}', velocity_toml)
+        # NOTE: We intentionally do NOT add servers to the try list.
+        # This ensures players can only connect with the exact hostname match.
+        # Without a try list fallback, unmatched hostnames will be rejected.
 
         # Add forced host mapping
         if f'"{hostname}"' not in velocity_toml:
@@ -179,17 +170,6 @@ class VelocityManager:
         # Remove server from [servers] section
         server_line_pattern = rf'\n{re.escape(server_name)} = "[^"]*"'
         velocity_toml = re.sub(server_line_pattern, '', velocity_toml)
-
-        # Remove from try list
-        try_pattern = r'try = \[(.*?)\]'
-        try_match = re.search(try_pattern, velocity_toml)
-        if try_match:
-            current_try = try_match.group(1).strip()
-            # Remove this server from the try list
-            servers_in_try = [s.strip() for s in current_try.split(',') if s.strip()]
-            servers_in_try = [s for s in servers_in_try if s != f'"{server_name}"']
-            new_try = ', '.join(servers_in_try)
-            velocity_toml = re.sub(try_pattern, f'try = [{new_try}]', velocity_toml)
 
         # Remove forced host mapping
         host_line_pattern = rf'\n"{re.escape(hostname)}" = \["{re.escape(server_name)}"\]'
