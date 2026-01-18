@@ -34,8 +34,10 @@ export default function Home() {
   const [logs, setLogs] = useState<string[]>([])
   const [wsConnected, setWsConnected] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
+  const [metrics, setMetrics] = useState<{ memory_bytes: number; memory_human: string } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
+  const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
@@ -44,11 +46,14 @@ export default function Home() {
     }
   }, [logs, showLogs])
 
-  // Cleanup WebSocket on unmount
+  // Cleanup WebSocket and metrics interval on unmount
   useEffect(() => {
     return () => {
       if (wsRef.current) {
         wsRef.current.close()
+      }
+      if (metricsIntervalRef.current) {
+        clearInterval(metricsIntervalRef.current)
       }
     }
   }, [])
@@ -85,6 +90,51 @@ export default function Home() {
         'Accept': 'application/json',
       },
     })
+  }
+
+  async function fetchMetrics() {
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/metrics`)
+      if (res.ok) {
+        const data = await res.json()
+        console.log('Metrics response:', data)
+        // Get the minecraft container metrics (first one)
+        if (data.metrics && data.metrics.length > 0) {
+          const mcMetrics = data.metrics.find((m: any) => m.container === 'minecraft') || data.metrics[0]
+          setMetrics({
+            memory_bytes: mcMetrics.memory_bytes,
+            memory_human: mcMetrics.memory_human
+          })
+        } else {
+          setMetrics({ memory_bytes: 0, memory_human: 'N/A' })
+        }
+      } else {
+        console.log('Metrics fetch failed:', res.status)
+        setMetrics({ memory_bytes: 0, memory_human: 'N/A' })
+      }
+    } catch (err) {
+      console.log('Failed to fetch metrics:', err)
+      setMetrics({ memory_bytes: 0, memory_human: 'N/A' })
+    }
+  }
+
+  function startMetricsPolling() {
+    // Clear any existing interval
+    if (metricsIntervalRef.current) {
+      clearInterval(metricsIntervalRef.current)
+    }
+    // Fetch immediately
+    fetchMetrics()
+    // Then poll every 10 seconds
+    metricsIntervalRef.current = setInterval(fetchMetrics, 10000)
+  }
+
+  function stopMetricsPolling() {
+    if (metricsIntervalRef.current) {
+      clearInterval(metricsIntervalRef.current)
+      metricsIntervalRef.current = null
+    }
+    setMetrics(null)
   }
 
   async function connectToLogs(namespace: string, podName: string) {
@@ -166,6 +216,7 @@ export default function Home() {
     setError(null)
     setShowLogs(false)
     disconnectLogs()
+    stopMetricsPolling()
 
     try {
       const res = await fetchWithAuth(`${API_URL}/gameserver`)
@@ -186,6 +237,11 @@ export default function Home() {
       console.log('Existing server:', data)
       setResult(data)
       setError(null)
+
+      // Start metrics polling if server is ready
+      if (data.status === 'ready') {
+        startMetricsPolling()
+      }
     } catch (err) {
       console.error('Error fetching server:', err)
       setError('Failed to connect to backend. Please ensure the backend server is running.')
@@ -224,6 +280,7 @@ export default function Home() {
     setLoading(true)
     setError(null)
     disconnectLogs()
+    stopMetricsPolling()
 
     try {
       const res = await fetchWithAuth(`${API_URL}/gameserver/stop`, {
@@ -255,6 +312,7 @@ export default function Home() {
     setLoading(true)
     setError(null)
     disconnectLogs()
+    stopMetricsPolling()
 
     try {
       const res = await fetchWithAuth(`${API_URL}/gameserver`, {
@@ -284,10 +342,11 @@ export default function Home() {
     setError(null)
     setShowLogs(false)
     disconnectLogs()
+    stopMetricsPolling()
 
     try {
       const res = await fetchWithAuth(
-        `${API_URL}/gameserver?game=minecraft&memory=2G`,
+        `${API_URL}/gameserver?game=minecraft&memory=3G`,
         { method: 'POST' }
       )
 
@@ -310,6 +369,11 @@ export default function Home() {
       console.log('API response:', data)
       setResult(data)
       setError(null)
+
+      // Start metrics polling if server is ready
+      if (data.status === 'ready') {
+        startMetricsPolling()
+      }
     } catch (err) {
       console.error('Error creating server:', err)
       setError('An unexpected error occurred. Please try again.')
@@ -475,6 +539,14 @@ export default function Home() {
                   <span className="text-slate-400 text-sm">Namespace</span>
                   <span className="font-mono text-xs text-slate-500">{result.namespace}</span>
                 </div>
+                {result.status === 'ready' && (
+                  <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                    <span className="text-slate-400 text-sm">RAM Usage</span>
+                    <span className="font-mono text-sm text-cyan-400">
+                      {metrics ? metrics.memory_human : 'Loading...'}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Start/Stop Buttons */}

@@ -43,7 +43,7 @@ app.add_middleware(
 @app.post("/gameserver", response_model=GameServerResponse)
 def create_game_server(
     game: str = "minecraft",
-    memory: str = "2G",
+    memory: str = "3G",
     user_id: str = Depends(get_user_id)
 ):
     """Create a new game server for the authenticated user"""
@@ -117,6 +117,9 @@ echo "Paper Velocity config written"
         ],
     )
 
+    # Convert memory format (e.g., "2G" -> "2Gi" for Kubernetes)
+    memory_k8s = memory.replace("G", "Gi").replace("M", "Mi")
+
     container = client.V1Container(
         name=game,
         image="itzg/minecraft-server",
@@ -134,6 +137,10 @@ echo "Paper Velocity config written"
                 mount_path="/data",
             )
         ],
+        resources=client.V1ResourceRequirements(
+            requests={"memory": memory_k8s},
+            limits={"memory": memory_k8s}
+        ),
     )
 
     template = client.V1PodTemplateSpec(
@@ -324,6 +331,63 @@ def get_pods(user_id: str = Depends(get_user_id)):
         if e.status == 404:
             raise HTTPException(status_code=404, detail="Namespace not found")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090")
+
+
+@app.get("/gameserver/metrics")
+def get_metrics(user_id: str = Depends(get_user_id)):
+    """Get resource metrics (RAM usage) for the authenticated user's game server"""
+    import httpx
+
+    namespace = f"server-{user_id}"
+
+    # Query Prometheus for container memory usage
+    query = f'container_memory_working_set_bytes{{namespace="{namespace}", container="minecraft"}}'
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            response = client.get(
+                f"{PROMETHEUS_URL}/api/v1/query",
+                params={"query": query}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            pod_metrics = []
+            if data.get("status") == "success":
+                results = data.get("data", {}).get("result", [])
+                for result in results:
+                    metric = result.get("metric", {})
+                    value = result.get("value", [None, "0"])
+                    memory_bytes = int(float(value[1])) if len(value) > 1 else 0
+
+                    pod_metrics.append({
+                        "pod": metric.get("pod", "unknown"),
+                        "container": metric.get("container", "minecraft"),
+                        "memory_bytes": memory_bytes,
+                        "memory_human": format_bytes(memory_bytes)
+                    })
+
+            return {"metrics": pod_metrics}
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to query Prometheus: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch metrics from Prometheus")
+    except Exception as e:
+        logger.error(f"Error fetching metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def format_bytes(bytes_val: int) -> str:
+    """Format bytes to human-readable string"""
+    if bytes_val >= 1024 ** 3:
+        return f"{bytes_val / (1024 ** 3):.1f} GB"
+    elif bytes_val >= 1024 ** 2:
+        return f"{bytes_val / (1024 ** 2):.1f} MB"
+    elif bytes_val >= 1024:
+        return f"{bytes_val / 1024:.1f} KB"
+    return f"{bytes_val} B"
 
 
 executor = ThreadPoolExecutor(max_workers=5)
