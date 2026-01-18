@@ -43,7 +43,7 @@ app.add_middleware(
 @app.post("/gameserver", response_model=GameServerResponse)
 def create_game_server(
     game: str = "minecraft",
-    memory: str = "3G",
+    memory: str = "2G",
     user_id: str = Depends(get_user_id)
 ):
     """Create a new game server for the authenticated user"""
@@ -117,9 +117,6 @@ echo "Paper Velocity config written"
         ],
     )
 
-    # Convert memory format (e.g., "2G" -> "2Gi" for Kubernetes)
-    memory_k8s = memory.replace("G", "Gi").replace("M", "Mi")
-
     container = client.V1Container(
         name=game,
         image="itzg/minecraft-server",
@@ -137,10 +134,6 @@ echo "Paper Velocity config written"
                 mount_path="/data",
             )
         ],
-        resources=client.V1ResourceRequirements(
-            requests={"memory": memory_k8s},
-            limits={"memory": memory_k8s}
-        ),
     )
 
     template = client.V1PodTemplateSpec(
@@ -388,6 +381,240 @@ def format_bytes(bytes_val: int) -> str:
     elif bytes_val >= 1024:
         return f"{bytes_val / 1024:.1f} KB"
     return f"{bytes_val} B"
+
+
+# Popular Minecraft plugins with their Modrinth project slugs
+POPULAR_PLUGINS = [
+    {"id": "essentialsx", "modrinth_id": "essentialsx", "name": "EssentialsX", "description": "Essential commands and features for any server"},
+    {"id": "worldedit", "modrinth_id": "worldedit", "name": "WorldEdit", "description": "In-game map editor for building and terrain manipulation"},
+    {"id": "vault", "modrinth_id": "vault", "name": "Vault", "description": "Permission, chat, and economy API"},
+    {"id": "luckperms", "modrinth_id": "luckperms", "name": "LuckPerms", "description": "Advanced permissions management system"},
+    {"id": "worldguard", "modrinth_id": "worldguard", "name": "WorldGuard", "description": "Region protection and flag management"},
+    {"id": "coreprotect", "modrinth_id": "coreprotect", "name": "CoreProtect", "description": "Block logging and rollback tool"},
+    {"id": "chunky", "modrinth_id": "chunky", "name": "Chunky", "description": "Pre-generate chunks to improve server performance"},
+    {"id": "spark", "modrinth_id": "spark", "name": "Spark", "description": "Performance profiler for Minecraft servers"},
+]
+
+
+@app.post("/gameserver/op/{player_name}")
+def op_player(player_name: str, user_id: str = Depends(get_user_id)):
+    """Give operator permissions to a player"""
+    from kubernetes.stream import stream
+
+    # Validate player name (alphanumeric and underscore only, 3-16 chars)
+    if not player_name or len(player_name) < 3 or len(player_name) > 16:
+        raise HTTPException(status_code=400, detail="Invalid player name length (must be 3-16 characters)")
+    if not all(c.isalnum() or c == '_' for c in player_name):
+        raise HTTPException(status_code=400, detail="Invalid player name (alphanumeric and underscore only)")
+
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    try:
+        # Find the minecraft pod
+        pods = v1.list_namespaced_pod(namespace=namespace, label_selector="app=minecraft")
+        if not pods.items:
+            raise HTTPException(status_code=404, detail="No minecraft pod found")
+
+        pod_name = pods.items[0].metadata.name
+
+        # Execute rcon-cli op command
+        exec_command = ['rcon-cli', 'op', player_name]
+        result = stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=exec_command,
+            container='minecraft',
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False
+        )
+
+        logger.info(f"OP command result for {player_name}: {result}")
+        return {"status": "success", "message": f"Opped {player_name}", "output": result}
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to op player: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gameserver/plugins/available")
+def get_available_plugins():
+    """Get list of available plugins that can be installed"""
+    return {"plugins": POPULAR_PLUGINS}
+
+
+@app.get("/gameserver/plugins")
+def get_installed_plugins(user_id: str = Depends(get_user_id)):
+    """Get list of plugins installed on the user's server"""
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    apps = client.AppsV1Api()
+
+    try:
+        deployment = apps.read_namespaced_deployment(name="minecraft", namespace=namespace)
+        containers = deployment.spec.template.spec.containers
+
+        installed_ids = []
+        for container in containers:
+            if container.name == "minecraft" and container.env:
+                for env in container.env:
+                    if env.name == "MODRINTH_PROJECTS":
+                        installed_ids = [id.strip() for id in env.value.split(",") if id.strip()]
+                        break
+
+        # Map modrinth IDs back to plugin info
+        installed_plugins = []
+        for plugin in POPULAR_PLUGINS:
+            if plugin["modrinth_id"] in installed_ids:
+                installed_plugins.append(plugin)
+
+        return {"plugins": installed_plugins}
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/gameserver/plugins/{plugin_id}")
+def install_plugin(plugin_id: str, user_id: str = Depends(get_user_id)):
+    """Install a plugin on the user's server"""
+    # Find the plugin
+    plugin = next((p for p in POPULAR_PLUGINS if p["id"] == plugin_id), None)
+    if not plugin:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    apps = client.AppsV1Api()
+
+    try:
+        deployment = apps.read_namespaced_deployment(name="minecraft", namespace=namespace)
+
+        # Get current MODRINTH_PROJECTS value
+        current_ids = []
+        container_idx = None
+        env_idx = None
+
+        for i, container in enumerate(deployment.spec.template.spec.containers):
+            if container.name == "minecraft":
+                container_idx = i
+                if container.env:
+                    for j, env in enumerate(container.env):
+                        if env.name == "MODRINTH_PROJECTS":
+                            current_ids = [id.strip() for id in env.value.split(",") if id.strip()]
+                            env_idx = j
+                            break
+                break
+
+        if container_idx is None:
+            raise HTTPException(status_code=500, detail="Minecraft container not found")
+
+        # Add plugin if not already installed
+        if plugin["modrinth_id"] not in current_ids:
+            current_ids.append(plugin["modrinth_id"])
+
+        new_value = ",".join(current_ids)
+
+        # Update or add the environment variable
+        if env_idx is not None:
+            deployment.spec.template.spec.containers[container_idx].env[env_idx].value = new_value
+        else:
+            if deployment.spec.template.spec.containers[container_idx].env is None:
+                deployment.spec.template.spec.containers[container_idx].env = []
+            deployment.spec.template.spec.containers[container_idx].env.append(
+                client.V1EnvVar(name="MODRINTH_PROJECTS", value=new_value)
+            )
+
+        # Apply the update
+        apps.patch_namespaced_deployment(name="minecraft", namespace=namespace, body=deployment)
+
+        return {"status": "installed", "plugin": plugin, "message": "Restart your server to apply changes"}
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/gameserver/plugins/{plugin_id}")
+def uninstall_plugin(plugin_id: str, user_id: str = Depends(get_user_id)):
+    """Uninstall a plugin from the user's server"""
+    # Find the plugin
+    plugin = next((p for p in POPULAR_PLUGINS if p["id"] == plugin_id), None)
+    if not plugin:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    apps = client.AppsV1Api()
+
+    try:
+        deployment = apps.read_namespaced_deployment(name="minecraft", namespace=namespace)
+
+        # Get current MODRINTH_PROJECTS value
+        container_idx = None
+        env_idx = None
+        current_ids = []
+
+        for i, container in enumerate(deployment.spec.template.spec.containers):
+            if container.name == "minecraft":
+                container_idx = i
+                if container.env:
+                    for j, env in enumerate(container.env):
+                        if env.name == "MODRINTH_PROJECTS":
+                            current_ids = [id.strip() for id in env.value.split(",") if id.strip()]
+                            env_idx = j
+                            break
+                break
+
+        if container_idx is None:
+            raise HTTPException(status_code=500, detail="Minecraft container not found")
+
+        # Remove plugin
+        if plugin["modrinth_id"] in current_ids:
+            current_ids.remove(plugin["modrinth_id"])
+
+        if env_idx is not None:
+            if current_ids:
+                deployment.spec.template.spec.containers[container_idx].env[env_idx].value = ",".join(current_ids)
+            else:
+                # Remove the env var if no plugins left
+                deployment.spec.template.spec.containers[container_idx].env.pop(env_idx)
+
+            # Apply the update
+            apps.patch_namespaced_deployment(name="minecraft", namespace=namespace, body=deployment)
+
+        return {"status": "uninstalled", "plugin": plugin, "message": "Restart your server to apply changes"}
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 executor = ThreadPoolExecutor(max_workers=5)

@@ -35,6 +35,13 @@ export default function Home() {
   const [wsConnected, setWsConnected] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [metrics, setMetrics] = useState<{ memory_bytes: number; memory_human: string } | null>(null)
+  const [activeTab, setActiveTab] = useState<'details' | 'monitoring' | 'operations' | 'plugins'>('details')
+  const [availablePlugins, setAvailablePlugins] = useState<any[]>([])
+  const [installedPlugins, setInstalledPlugins] = useState<any[]>([])
+  const [pluginLoading, setPluginLoading] = useState<string | null>(null)
+  const [opPlayerName, setOpPlayerName] = useState('')
+  const [opLoading, setOpLoading] = useState(false)
+  const [opMessage, setOpMessage] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -135,6 +142,100 @@ export default function Home() {
       metricsIntervalRef.current = null
     }
     setMetrics(null)
+  }
+
+  async function fetchAvailablePlugins() {
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins/available`)
+      if (res.ok) {
+        const data = await res.json()
+        setAvailablePlugins(data.plugins || [])
+      }
+    } catch (err) {
+      console.log('Failed to fetch available plugins:', err)
+    }
+  }
+
+  async function fetchInstalledPlugins() {
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins`)
+      if (res.ok) {
+        const data = await res.json()
+        setInstalledPlugins(data.plugins || [])
+      }
+    } catch (err) {
+      console.log('Failed to fetch installed plugins:', err)
+    }
+  }
+
+  async function installPlugin(pluginId: string) {
+    setPluginLoading(pluginId)
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins/${pluginId}`, {
+        method: 'POST'
+      })
+      if (res.ok) {
+        await fetchInstalledPlugins()
+      } else {
+        const data = await res.json()
+        setError(data.detail || 'Failed to install plugin')
+      }
+    } catch (err) {
+      console.error('Failed to install plugin:', err)
+      setError('Failed to install plugin')
+    } finally {
+      setPluginLoading(null)
+    }
+  }
+
+  async function uninstallPlugin(pluginId: string) {
+    setPluginLoading(pluginId)
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins/${pluginId}`, {
+        method: 'DELETE'
+      })
+      if (res.ok) {
+        await fetchInstalledPlugins()
+      } else {
+        const data = await res.json()
+        setError(data.detail || 'Failed to uninstall plugin')
+      }
+    } catch (err) {
+      console.error('Failed to uninstall plugin:', err)
+      setError('Failed to uninstall plugin')
+    } finally {
+      setPluginLoading(null)
+    }
+  }
+
+  function isPluginInstalled(pluginId: string): boolean {
+    return installedPlugins.some(p => p.id === pluginId)
+  }
+
+  async function opPlayer() {
+    if (!opPlayerName.trim()) return
+
+    setOpLoading(true)
+    setOpMessage(null)
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/op/${encodeURIComponent(opPlayerName.trim())}`, {
+        method: 'POST'
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setOpMessage(`Successfully opped ${opPlayerName}`)
+        setOpPlayerName('')
+      } else {
+        setOpMessage(data.detail || 'Failed to op player')
+      }
+    } catch (err) {
+      console.error('Failed to op player:', err)
+      setOpMessage('Failed to op player')
+    } finally {
+      setOpLoading(false)
+      // Clear message after 5 seconds
+      setTimeout(() => setOpMessage(null), 5000)
+    }
   }
 
   async function connectToLogs(namespace: string, podName: string) {
@@ -242,6 +343,10 @@ export default function Home() {
       if (data.status === 'ready') {
         startMetricsPolling()
       }
+
+      // Fetch plugins
+      fetchAvailablePlugins()
+      fetchInstalledPlugins()
     } catch (err) {
       console.error('Error fetching server:', err)
       setError('Failed to connect to backend. Please ensure the backend server is running.')
@@ -346,7 +451,7 @@ export default function Home() {
 
     try {
       const res = await fetchWithAuth(
-        `${API_URL}/gameserver?game=minecraft&memory=3G`,
+        `${API_URL}/gameserver?game=minecraft&memory=2G`,
         { method: 'POST' }
       )
 
@@ -506,8 +611,61 @@ export default function Home() {
           {/* Server Status Section */}
           {result && (
             <div className="border-t border-slate-800 bg-slate-900/50 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">Server Details</h2>
+              {/* Tab Navigation */}
+              <div className="flex items-center gap-1 mb-4 border-b border-slate-700">
+                <button
+                  onClick={() => setActiveTab('details')}
+                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                    activeTab === 'details'
+                      ? 'text-indigo-400'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Details
+                  {activeTab === 'details' && (
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                  )}
+                </button>
+                <button
+                  onClick={() => setActiveTab('monitoring')}
+                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                    activeTab === 'monitoring'
+                      ? 'text-indigo-400'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Monitoring
+                  {activeTab === 'monitoring' && (
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                  )}
+                </button>
+                <button
+                  onClick={() => setActiveTab('operations')}
+                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                    activeTab === 'operations'
+                      ? 'text-indigo-400'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Operations
+                  {activeTab === 'operations' && (
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                  )}
+                </button>
+                <button
+                  onClick={() => setActiveTab('plugins')}
+                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                    activeTab === 'plugins'
+                      ? 'text-indigo-400'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Plugins
+                  {activeTab === 'plugins' && (
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                  )}
+                </button>
+                <div className="flex-1" />
                 <span className={`px-3 py-1 rounded-full text-xs font-medium ${
                   result.status === 'ready'
                     ? 'bg-green-500/20 text-green-400 border border-green-500/30'
@@ -519,37 +677,138 @@ export default function Home() {
                 </span>
               </div>
 
-              <div className="space-y-3 mb-4">
-                <div className="p-3 bg-slate-800/50 rounded-lg">
-                  <span className="text-slate-400 text-sm block mb-1">Connect with</span>
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-indigo-400 font-medium">{result.hostname}:{result.port}</span>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(`${result.hostname}:${result.port}`)}
-                      className="text-slate-400 hover:text-white transition-colors p-1"
-                      title="Copy to clipboard"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                    </button>
+              {/* Details Tab */}
+              {activeTab === 'details' && (
+                <div className="space-y-3 mb-4">
+                  <div className="p-3 bg-slate-800/50 rounded-lg">
+                    <span className="text-slate-400 text-sm block mb-1">Connect with</span>
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-indigo-400 font-medium">{result.hostname}</span>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(result.hostname)}
+                        className="text-slate-400 hover:text-white transition-colors p-1"
+                        title="Copy to clipboard"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
-                  <span className="text-slate-400 text-sm">Namespace</span>
-                  <span className="font-mono text-xs text-slate-500">{result.namespace}</span>
-                </div>
-                {result.status === 'ready' && (
-                  <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
-                    <span className="text-slate-400 text-sm">RAM Usage</span>
-                    <span className="font-mono text-sm text-cyan-400">
-                      {metrics ? metrics.memory_human : 'Loading...'}
-                    </span>
-                  </div>
-                )}
-              </div>
+              )}
 
-              {/* Start/Stop Buttons */}
+              {/* Monitoring Tab */}
+              {activeTab === 'monitoring' && (
+                <div className="space-y-3 mb-4">
+                  {result.status === 'ready' ? (
+                    <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                      <span className="text-slate-400 text-sm">RAM Usage</span>
+                      <span className="font-mono text-sm text-cyan-400">
+                        {metrics ? metrics.memory_human : 'Loading...'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-slate-500">
+                      Start the server to view monitoring data
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Operations Tab */}
+              {activeTab === 'operations' && (
+                <div className="space-y-3 mb-4">
+                  {result.status === 'ready' ? (
+                    <div className="p-3 bg-slate-800/50 rounded-lg">
+                      <span className="text-slate-400 text-sm block mb-2">Give Operator Permissions</span>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={opPlayerName}
+                          onChange={(e) => setOpPlayerName(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && opPlayer()}
+                          placeholder="Player name"
+                          className="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 text-sm focus:outline-none focus:border-indigo-500"
+                          disabled={opLoading}
+                        />
+                        <button
+                          onClick={opPlayer}
+                          disabled={opLoading || !opPlayerName.trim()}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                        >
+                          {opLoading ? (
+                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          ) : 'OP'}
+                        </button>
+                      </div>
+                      {opMessage && (
+                        <p className={`mt-2 text-sm ${opMessage.includes('Successfully') ? 'text-green-400' : 'text-red-400'}`}>
+                          {opMessage}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-slate-500">
+                      Start the server to access operations
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Plugins Tab */}
+              {activeTab === 'plugins' && (
+                <div className="space-y-3 mb-4">
+                  <p className="text-slate-400 text-sm mb-3">
+                    Install popular plugins on your server. Restart required after changes.
+                  </p>
+                  {availablePlugins.map((plugin) => {
+                    const installed = isPluginInstalled(plugin.id)
+                    const isLoading = pluginLoading === plugin.id
+                    return (
+                      <div key={plugin.id} className="p-3 bg-slate-800/50 rounded-lg flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-white">{plugin.name}</span>
+                            {installed && (
+                              <span className="px-2 py-0.5 text-xs bg-green-500/20 text-green-400 rounded-full">
+                                Installed
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-slate-400 text-sm truncate">{plugin.description}</p>
+                        </div>
+                        <button
+                          onClick={() => installed ? uninstallPlugin(plugin.id) : installPlugin(plugin.id)}
+                          disabled={isLoading}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex-shrink-0 ${
+                            installed
+                              ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30'
+                              : 'bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 border border-indigo-500/30'
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                          {isLoading ? (
+                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          ) : installed ? 'Remove' : 'Install'}
+                        </button>
+                      </div>
+                    )
+                  })}
+                  {availablePlugins.length === 0 && (
+                    <div className="text-center py-8 text-slate-500">
+                      Loading plugins...
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Start/Stop Buttons - Always visible */}
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <button
                   onClick={startServer}
