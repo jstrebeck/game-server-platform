@@ -180,6 +180,17 @@ class VelocityManager:
         server_line_pattern = rf'\n{re.escape(server_name)} = "[^"]*"'
         velocity_toml = re.sub(server_line_pattern, '', velocity_toml)
 
+        # Remove from try list
+        try_pattern = r'try = \[(.*?)\]'
+        try_match = re.search(try_pattern, velocity_toml)
+        if try_match:
+            current_try = try_match.group(1).strip()
+            # Remove this server from the try list
+            servers_in_try = [s.strip() for s in current_try.split(',') if s.strip()]
+            servers_in_try = [s for s in servers_in_try if s != f'"{server_name}"']
+            new_try = ', '.join(servers_in_try)
+            velocity_toml = re.sub(try_pattern, f'try = [{new_try}]', velocity_toml)
+
         # Remove forced host mapping
         host_line_pattern = rf'\n"{re.escape(hostname)}" = \["{re.escape(server_name)}"\]'
         velocity_toml = re.sub(host_line_pattern, '', velocity_toml)
