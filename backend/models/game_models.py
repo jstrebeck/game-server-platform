@@ -7,7 +7,7 @@ class GameServerCreate(BaseModel):
 
 class GameServerResponse(BaseModel):
     namespace: str
-    ip: str | None
+    hostname: str
     port: int
     status: str
 

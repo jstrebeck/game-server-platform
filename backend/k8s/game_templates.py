@@ -24,7 +24,11 @@ def minecraft_deployment(game: str, memory: str, pvc_name: str = None):
         ports=[client.V1ContainerPort(container_port=25565)],
         env=[
             client.V1EnvVar(name="EULA", value="TRUE"),
-            client.V1EnvVar(name="MEMORY", value=memory)
+            client.V1EnvVar(name="MEMORY", value=memory),
+            # Velocity proxy configuration
+            client.V1EnvVar(name="ONLINE_MODE", value="FALSE"),
+            client.V1EnvVar(name="TYPE", value="PAPER"),
+            client.V1EnvVar(name="PAPER_VELOCITY_SECRET", value="REDACTED"),
         ],
         volume_mounts=[
             client.V1VolumeMount(
@@ -57,10 +61,11 @@ def minecraft_deployment(game: str, memory: str, pvc_name: str = None):
     )
 
 def minecraft_service(game):
+    """Create a ClusterIP service for Minecraft server (accessed via Velocity proxy)"""
     return client.V1Service(
         metadata=client.V1ObjectMeta(name=f"{game}-service"),
         spec=client.V1ServiceSpec(
-            type="LoadBalancer",
+            type="ClusterIP",
             selector={"app": game},
             ports=[
                 client.V1ServicePort(

@@ -18,4 +18,5 @@ deploy: build
 	docker tag watch2play-backend 192.168.2.203:5000/watch2play-backend:latest
 	docker push 192.168.2.203:5000/watch2play-frontend:latest
 	docker push 192.168.2.203:5000/watch2play-backend:latest
-
+	kubectl rollout restart deployment/watch2play-frontend -n watch2play
+	kubectl rollout restart deployment/watch2play-backend -n watch2play

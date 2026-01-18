@@ -12,9 +12,14 @@ from kubernetes import client, config, watch
 from auth.dependencies import get_user_id
 from auth.websocket_auth import authenticate_websocket
 from k8s.k8s_manager import K8sManager
+from k8s.velocity_manager import VelocityManager
 from models.game_models import GameServerResponse
 
 load_dotenv()
+
+# Minecraft hostname configuration
+# Players connect via {user_id}.{MC_HOSTNAME_BASE}
+MC_HOSTNAME_BASE = os.getenv("MC_HOSTNAME_BASE", "infinabyte.com")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 k8s = K8sManager()
+velocity = VelocityManager()
 
 # Configure CORS with environment-based origins
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -87,6 +93,30 @@ def create_game_server(
     # ---------------------------
     # Create Deployment
     # ---------------------------
+    # Init container to configure Paper for Velocity forwarding
+    init_container = client.V1Container(
+        name="configure-velocity",
+        image="busybox:latest",
+        command=["sh", "-c", """
+mkdir -p /data/config
+cat > /data/config/paper-global.yml << 'EOF'
+_version: 29
+proxies:
+  velocity:
+    enabled: true
+    online-mode: true
+    secret: REDACTED
+EOF
+echo "Paper Velocity config written"
+"""],
+        volume_mounts=[
+            client.V1VolumeMount(
+                name="game-data",
+                mount_path="/data",
+            )
+        ],
+    )
+
     container = client.V1Container(
         name=game,
         image="itzg/minecraft-server",
@@ -94,6 +124,9 @@ def create_game_server(
         env=[
             client.V1EnvVar(name="EULA", value="TRUE"),
             client.V1EnvVar(name="MEMORY", value=memory),
+            # Velocity proxy configuration
+            client.V1EnvVar(name="ONLINE_MODE", value="FALSE"),
+            client.V1EnvVar(name="TYPE", value="PAPER"),
         ],
         volume_mounts=[
             client.V1VolumeMount(
@@ -106,6 +139,7 @@ def create_game_server(
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={"app": game}),
         spec=client.V1PodSpec(
+            init_containers=[init_container],
             containers=[container],
             volumes=[
                 client.V1Volume(
@@ -133,12 +167,12 @@ def create_game_server(
     )
 
     # ---------------------------
-    # Create Service
+    # Create Service (ClusterIP - accessed via Velocity proxy)
     # ---------------------------
     service = client.V1Service(
         metadata=client.V1ObjectMeta(name=f"{game}-service"),
         spec=client.V1ServiceSpec(
-            type="LoadBalancer",
+            type="ClusterIP",
             selector={"app": game},
             ports=[client.V1ServicePort(port=25565, target_port=25565)],
         ),
@@ -147,30 +181,21 @@ def create_game_server(
     v1.create_namespaced_service(namespace=namespace, body=service)
 
     # ---------------------------
-    # Wait for External IP
+    # Register with Velocity Proxy
     # ---------------------------
-    external_ip = None
-
-    for _ in range(60):  # wait up to 60 seconds
-        svc = v1.read_namespaced_service(
-            name=f"{game}-service",
-            namespace=namespace
-        )
-
-        lb = svc.status.load_balancer.ingress
-        if lb:
-            external_ip = lb[0].ip or lb[0].hostname
-            break
-        time.sleep(2)
-
-    if not external_ip:
-        external_ip = "PENDING"
+    hostname = f"{user_id}.{MC_HOSTNAME_BASE}"
+    try:
+        velocity.register_server(user_id, namespace, hostname)
+        logger.info(f"Registered server with Velocity: {hostname}")
+    except Exception as e:
+        logger.error(f"Failed to register with Velocity: {e}")
+        # Continue anyway - server is created, just not routed yet
 
     return {
         "namespace": namespace,
-        "ip": external_ip,
+        "hostname": hostname,
         "port": 25565,
-        "status": "ready" if external_ip != "PENDING" else "provisioning"
+        "status": "ready"
     }
 
 
@@ -194,6 +219,34 @@ def start_server(user_id: str = Depends(get_user_id)):
 def delete_server(user_id: str = Depends(get_user_id)):
     """Delete the game server for the authenticated user"""
     namespace = f"server-{user_id}"
+    hostname = f"{user_id}.{MC_HOSTNAME_BASE}"
+
+    # Unregister from Velocity proxy
+    try:
+        velocity.unregister_server(user_id, hostname)
+        logger.info(f"Unregistered server from Velocity: {hostname}")
+    except Exception as e:
+        logger.error(f"Failed to unregister from Velocity: {e}")
+
+    # Delete PVC explicitly to ensure clean state for next creation
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+    try:
+        # Delete the PVC first to ensure data is wiped
+        v1.delete_namespaced_persistent_volume_claim(
+            name="minecraft-data",
+            namespace=namespace,
+            body=client.V1DeleteOptions(propagation_policy="Foreground")
+        )
+        logger.info(f"Deleted PVC minecraft-data in namespace {namespace}")
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            logger.error(f"Failed to delete PVC: {e}")
+
     k8s.delete_namespace(namespace)
     return {"status": "deleted"}
 
@@ -202,6 +255,7 @@ def delete_server(user_id: str = Depends(get_user_id)):
 def get_server(user_id: str = Depends(get_user_id)):
     """Get existing server information for the authenticated user"""
     namespace = f"server-{user_id}"
+    hostname = f"{user_id}.{MC_HOSTNAME_BASE}"
 
     try:
         config.load_incluster_config()
@@ -209,6 +263,7 @@ def get_server(user_id: str = Depends(get_user_id)):
         config.load_kube_config()
 
     v1 = client.CoreV1Api()
+    apps = client.AppsV1Api()
 
     try:
         # Check if namespace exists
@@ -218,24 +273,28 @@ def get_server(user_id: str = Depends(get_user_id)):
             raise HTTPException(status_code=404, detail="No server found")
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Get service to retrieve IP
+    # Check deployment status
     try:
-        service = v1.read_namespaced_service(name="minecraft-service", namespace=namespace)
+        deployment = apps.read_namespaced_deployment(name="minecraft", namespace=namespace)
+        replicas = deployment.spec.replicas or 0
+        ready_replicas = deployment.status.ready_replicas or 0
 
-        external_ip = "PENDING"
-        if service.status.load_balancer and service.status.load_balancer.ingress:
-            ingress = service.status.load_balancer.ingress[0]
-            external_ip = ingress.ip or ingress.hostname or "PENDING"
+        if replicas == 0:
+            status = "stopped"
+        elif ready_replicas >= replicas:
+            status = "ready"
+        else:
+            status = "starting"
 
         return {
             "namespace": namespace,
-            "ip": external_ip,
+            "hostname": hostname,
             "port": 25565,
-            "status": "ready" if external_ip != "PENDING" else "provisioning"
+            "status": status
         }
     except client.exceptions.ApiException as e:
         if e.status == 404:
-            raise HTTPException(status_code=404, detail="Server service not found")
+            raise HTTPException(status_code=404, detail="Server deployment not found")
         raise HTTPException(status_code=500, detail=str(e))
 
 

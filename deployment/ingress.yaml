@@ -1,0 +1,67 @@
+# NOTE: After deploying traefik.yaml, get the LoadBalancer IP with:
+#   kubectl get svc -n watch2play traefik
+# Then replace 192-168-2-206 below with the actual IP (e.g., 192-168-2-200)
+# Use dashes instead of dots for nip.io (192-168-2-200 not 192.168.2.200)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: watch2play-frontend
+  namespace: watch2play
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: watch2play.192-168-2-206.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: watch2play-frontend
+            port:
+              number: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: watch2play-backend
+  namespace: watch2play
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: api.watch2play.192-168-2-206.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: watch2play-backend
+            port:
+              number: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: traefik-dashboard
+  namespace: watch2play
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: traefik.192-168-2-206.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: traefik
+            port:
+              number: 8080

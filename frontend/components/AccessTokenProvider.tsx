@@ -3,15 +3,23 @@
 import { createContext, useContext, ReactNode } from 'react';
 
 interface AccessTokenContextType {
-  getAccessToken: () => Promise<string | null>;
+  getAccessToken: (forceRefresh?: boolean) => Promise<string | null>;
 }
 
 const AccessTokenContext = createContext<AccessTokenContextType | undefined>(undefined);
 
 export function AccessTokenProvider({ children }: { children: ReactNode }) {
-  async function getAccessToken(): Promise<string | null> {
+  async function getAccessToken(forceRefresh: boolean = false): Promise<string | null> {
     try {
-      const res = await fetch('/api/auth/session');
+      // Add cache-busting parameter when forcing refresh
+      const url = forceRefresh
+        ? `/api/auth/session?refresh=${Date.now()}`
+        : '/api/auth/session';
+
+      const res = await fetch(url, {
+        cache: forceRefresh ? 'no-store' : 'default',
+      });
+
       if (res.ok) {
         const data = await res.json();
         return data.accessToken || null;

@@ -22,11 +22,17 @@ rules:
   resources: ["namespaces"]
   verbs: ["create", "delete", "get", "list"]
 - apiGroups: [""]
-  resources: ["pods", "pods/log"]
-  verbs: ["get", "list", "watch"]
+  resources: ["pods", "pods/log", "pods/exec"]
+  verbs: ["get", "list", "watch", "create"]
 - apiGroups: [""]
   resources: ["services"]
   verbs: ["create", "delete", "get", "list"]
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["create", "delete", "get", "list"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "update", "patch"]
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["create", "delete", "get", "list", "patch", "update"]
@@ -83,6 +89,8 @@ spec:
           value: "RS256"
         - name: ALLOWED_ORIGINS
           value: "http://watch2play"
+        - name: MC_HOSTNAME_BASE
+          value: "infinabyte.com"
 ---
 apiVersion: v1
 kind: Service
