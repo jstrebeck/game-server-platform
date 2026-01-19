@@ -4,10 +4,10 @@ metadata:
   name: watch2play-frontend-config
   namespace: watch2play
 data:
-  APP_BASE_URL: "http://watch2play"
+  APP_BASE_URL: "https://minecrafthosting.gg"
   AUTH0_DOMAIN: "dev-86acntfmvqywrg0y.us.auth0.com"
   AUTH0_AUDIENCE: "https://api.watch2play.local"
-  NEXT_PUBLIC_API_URL: "http://192.168.2.202"
+  NEXT_PUBLIC_API_URL: "https://api.minecrafthosting.gg"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -72,7 +72,7 @@ metadata:
   name: watch2play-frontend
   namespace: watch2play
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: watch2play-frontend
   ports:

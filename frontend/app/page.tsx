@@ -31,6 +31,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
+  const [serverExists, setServerExists] = useState<boolean | null>(null) // null = unknown, true = exists, false = doesn't exist
   const [logs, setLogs] = useState<string[]>([])
   const [wsConnected, setWsConnected] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
@@ -64,6 +65,41 @@ export default function Home() {
       }
     }
   }, [])
+
+  // Auto-check for existing server when user is authenticated
+  useEffect(() => {
+    async function checkExistingServer() {
+      if (!user || authLoading) return
+
+      const token = await getAccessToken()
+      if (!token) return
+
+      try {
+        const res = await fetch(`${API_URL}/gameserver`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        })
+
+        if (res.ok) {
+          const data = await res.json()
+          setResult(data)
+          setServerExists(true)
+          if (data.status === 'ready') {
+            startMetricsPolling()
+          }
+          fetchAvailablePlugins()
+          fetchInstalledPlugins()
+        } else if (res.status === 404) {
+          setServerExists(false)
+        }
+      } catch (err) {
+        console.error('Error checking for existing server:', err)
+      }
+    }
+
+    checkExistingServer()
+  }, [user, authLoading])
 
   // Helper function for authenticated API calls
   async function fetchWithAuth(url: string, options: RequestInit = {}) {
@@ -324,6 +360,7 @@ export default function Home() {
 
       if (!res.ok) {
         if (res.status === 404) {
+          setServerExists(false)
           setError('No server found. Create a new server to get started.')
         } else if (res.status === 401) {
           setError('Authentication expired. Please log in again.')
@@ -337,6 +374,7 @@ export default function Home() {
       const data = await res.json()
       console.log('Existing server:', data)
       setResult(data)
+      setServerExists(true)
       setError(null)
 
       // Start metrics polling if server is ready
@@ -432,6 +470,7 @@ export default function Home() {
       const data = await res.json()
       console.log('Delete response:', data)
       setResult(null)
+      setServerExists(false)
       setError(null)
     } catch (err) {
       console.error('Error deleting server:', err)
@@ -458,7 +497,10 @@ export default function Home() {
       if (!res.ok) {
         // Handle specific error codes
         if (res.status === 409) {
-          setError('Server already exists. Click "View Existing Server" to access it.')
+          setServerExists(true)
+          setError('Server already exists.')
+          // Auto-fetch the existing server details
+          await getExistingServer()
         } else if (res.status === 500) {
           setError('Server error occurred. Please try again later.')
         } else if (res.status === 401) {
@@ -473,6 +515,7 @@ export default function Home() {
       const data = await res.json()
       console.log('API response:', data)
       setResult(data)
+      setServerExists(true)
       setError(null)
 
       // Start metrics polling if server is ready
@@ -502,18 +545,134 @@ export default function Home() {
   // Login screen for unauthenticated users
   if (!user) {
     return (
-      <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white flex items-center justify-center p-4">
-        <div className="text-center">
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-4">
-            Watch2Play
-          </h1>
-          <p className="text-slate-400 mb-8 text-lg">On-Demand Minecraft Server Hosting</p>
-          <a
-            href="/auth/login"
-            className="py-4 px-10 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] text-lg inline-block"
-          >
-            Login with Auth0
-          </a>
+      <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white">
+        {/* Hero Section */}
+        <div className="flex flex-col items-center justify-center min-h-screen p-4">
+          <div className="text-center max-w-4xl mx-auto">
+            <h1 className="text-5xl md:text-6xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-4">
+              Watch2Play
+            </h1>
+            <p className="text-slate-300 mb-2 text-xl md:text-2xl font-medium">On-Demand Minecraft Server Hosting</p>
+            <p className="text-slate-400 mb-8 text-base md:text-lg max-w-2xl mx-auto">
+              Your own private Minecraft server, ready in seconds. No technical knowledge required.
+            </p>
+
+            <a
+              href="/auth/login"
+              className="py-4 px-10 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] text-lg inline-block mb-16"
+            >
+              Get Started
+            </a>
+
+            {/* Features Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 text-left mb-16">
+              {/* Feature 1 */}
+              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
+                <div className="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center mb-4">
+                  <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-white mb-2">Instant Setup</h3>
+                <p className="text-slate-400 text-sm">
+                  Your server is ready in seconds. No downloads, no configuration files, no command line. Just click and play.
+                </p>
+              </div>
+
+              {/* Feature 2 */}
+              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
+                <div className="w-12 h-12 bg-emerald-500/20 rounded-xl flex items-center justify-center mb-4">
+                  <svg className="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-white mb-2">Play with Friends</h3>
+                <p className="text-slate-400 text-sm">
+                  Share your server address with friends and start playing together. Build, explore, and survive as a team.
+                </p>
+              </div>
+
+              {/* Feature 3 */}
+              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
+                <div className="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center mb-4">
+                  <svg className="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-white mb-2">No Hardware Needed</h3>
+                <p className="text-slate-400 text-sm">
+                  Stop worrying about computer specs or leaving your PC running. We handle all the heavy lifting in the cloud.
+                </p>
+              </div>
+
+              {/* Feature 4 */}
+              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
+                <div className="w-12 h-12 bg-cyan-500/20 rounded-xl flex items-center justify-center mb-4">
+                  <svg className="w-6 h-6 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-white mb-2">Easy Management</h3>
+                <p className="text-slate-400 text-sm">
+                  Start, stop, and manage your server from any device. View live logs, monitor performance, and install plugins with one click.
+                </p>
+              </div>
+
+              {/* Feature 5 */}
+              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
+                <div className="w-12 h-12 bg-amber-500/20 rounded-xl flex items-center justify-center mb-4">
+                  <svg className="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-white mb-2">DDoS Protected</h3>
+                <p className="text-slate-400 text-sm">
+                  Your server is protected against attacks. Play without interruptions and keep griefers at bay.
+                </p>
+              </div>
+
+              {/* Feature 6 */}
+              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
+                <div className="w-12 h-12 bg-rose-500/20 rounded-xl flex items-center justify-center mb-4">
+                  <svg className="w-6 h-6 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-white mb-2">Your World, Your Rules</h3>
+                <p className="text-slate-400 text-sm">
+                  Full control over your server. Add plugins, set permissions, whitelist players, and customize your experience.
+                </p>
+              </div>
+            </div>
+
+            {/* Why Host Section */}
+            <div className="bg-slate-900/30 backdrop-blur-sm rounded-2xl p-8 border border-slate-800 mb-8">
+              <h2 className="text-2xl font-bold text-white mb-4">Why Host Your Own Server?</h2>
+              <div className="text-left text-slate-300 space-y-4">
+                <p>
+                  Playing on public Minecraft servers can be fun, but nothing beats having your own private world.
+                  With your own server, you decide who can join, what plugins to use, and how the game is played.
+                </p>
+                <p>
+                  Whether you want a peaceful survival world with close friends, an epic creative building project,
+                  or a custom minigame server, having your own hosted server makes it possible without the technical hassle.
+                </p>
+                <p className="text-slate-400 text-sm">
+                  Traditional self-hosting requires port forwarding, static IPs, and keeping your computer running 24/7.
+                  We eliminate all of that complexity so you can focus on what matters: playing the game.
+                </p>
+              </div>
+            </div>
+
+            {/* CTA */}
+            <a
+              href="/auth/login"
+              className="py-4 px-10 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] text-lg inline-block"
+            >
+              Start Playing Now
+            </a>
+            <p className="text-slate-500 text-sm mt-4">Free to get started. No credit card required.</p>
+          </div>
         </div>
       </main>
     )
@@ -547,42 +706,64 @@ export default function Home() {
         <div className="bg-slate-900/80 backdrop-blur-sm rounded-2xl shadow-2xl border border-slate-800 overflow-hidden">
           {/* Server Actions Section */}
           <div className="p-6 space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={createServer}
-                disabled={loading}
-                className="py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none"
-              >
-                {loading ? (
+            <div className="flex justify-center">
+              {serverExists === null ? (
+                <div className="py-3 px-4 text-slate-400">
                   <span className="flex items-center justify-center gap-2">
                     <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
+                    Checking server status...
                   </span>
-                ) : (
-                  <span className="flex items-center justify-center gap-2">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                    Create New
-                  </span>
-                )}
-              </button>
-
-              <button
-                onClick={getExistingServer}
-                disabled={loading}
-                className="py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-slate-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none border border-slate-600"
-              >
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                  View Existing
-                </span>
-              </button>
+                </div>
+              ) : serverExists === false ? (
+                <button
+                  onClick={createServer}
+                  disabled={loading}
+                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none"
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Creating...
+                    </span>
+                  ) : (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      Create New Server
+                    </span>
+                  )}
+                </button>
+              ) : (
+                <button
+                  onClick={getExistingServer}
+                  disabled={loading}
+                  className="w-full py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-slate-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none border border-slate-600"
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Refreshing...
+                    </span>
+                  ) : (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      Refresh Server Details
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
 
             {/* Error Message */}
@@ -621,7 +802,7 @@ export default function Home() {
                       : 'text-slate-400 hover:text-white'
                   }`}
                 >
-                  Details
+                  Connect
                   {activeTab === 'details' && (
                     <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
                   )}
@@ -700,19 +881,84 @@ export default function Home() {
 
               {/* Monitoring Tab */}
               {activeTab === 'monitoring' && (
-                <div className="space-y-3 mb-4">
-                  {result.status === 'ready' ? (
+                <div className="space-y-4 mb-4">
+                  {/* RAM Usage */}
+                  {result.status === 'ready' && (
                     <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
                       <span className="text-slate-400 text-sm">RAM Usage</span>
                       <span className="font-mono text-sm text-cyan-400">
                         {metrics ? metrics.memory_human : 'Loading...'}
                       </span>
                     </div>
-                  ) : (
-                    <div className="text-center py-8 text-slate-500">
-                      Start the server to view monitoring data
-                    </div>
                   )}
+
+                  {/* Start/Stop Buttons */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={startServer}
+                      disabled={loading}
+                      className="py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
+                    >
+                      {loading ? (
+                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                      ) : (
+                        <>
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M8 5v14l11-7z" />
+                          </svg>
+                          Start
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={stopServer}
+                      disabled={loading}
+                      className="py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-red-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
+                    >
+                      {loading ? (
+                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                      ) : (
+                        <>
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M6 6h12v12H6z" />
+                          </svg>
+                          Stop
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Server Logs Button */}
+                  {!showLogs && (
+                    <button
+                      onClick={fetchPodsAndConnect}
+                      className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 font-semibold shadow-lg transition-all duration-200 transform hover:scale-[1.02] flex items-center justify-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      View Server Logs
+                    </button>
+                  )}
+
+                  {/* Delete Button */}
+                  <button
+                    onClick={deleteServer}
+                    disabled={loading}
+                    className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-red-900/50 border border-slate-700 hover:border-red-500/50 disabled:bg-slate-800 disabled:cursor-not-allowed text-slate-400 hover:text-red-400 text-sm font-medium transition-all duration-200 flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Delete Server
+                  </button>
                 </div>
               )}
 
@@ -808,72 +1054,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Start/Stop Buttons - Always visible */}
-              <div className="grid grid-cols-2 gap-3 mb-4">
-                <button
-                  onClick={startServer}
-                  disabled={loading}
-                  className="py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                >
-                  {loading ? (
-                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M8 5v14l11-7z" />
-                      </svg>
-                      Start
-                    </>
-                  )}
-                </button>
-
-                <button
-                  onClick={stopServer}
-                  disabled={loading}
-                  className="py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-red-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                >
-                  {loading ? (
-                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M6 6h12v12H6z" />
-                      </svg>
-                      Stop
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Delete Button */}
-              <button
-                onClick={deleteServer}
-                disabled={loading}
-                className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-red-900/50 border border-slate-700 hover:border-red-500/50 disabled:bg-slate-800 disabled:cursor-not-allowed text-slate-400 hover:text-red-400 text-sm font-medium transition-all duration-200 flex items-center justify-center gap-2 mb-4"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                Delete Server
-              </button>
-
-              {!showLogs && (
-                <button
-                  onClick={fetchPodsAndConnect}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] flex items-center justify-center gap-2"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  View Server Logs
-                </button>
-              )}
             </div>
           )}
 

@@ -91,7 +91,7 @@ spec:
         - name: AUTH0_ALGORITHMS
           value: "RS256"
         - name: ALLOWED_ORIGINS
-          value: "http://watch2play"
+          value: "https://minecrafthosting.gg, https://static.cloudflareinsights.com"
         - name: MC_HOSTNAME_BASE
           value: "infinabyte.com"
 ---

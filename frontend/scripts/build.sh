@@ -3,7 +3,6 @@
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRONTEND_DIR="$(dirname "$SCRIPT_DIR")"
-NEXT_PUBLIC_API_URL="http://192.168.2.202"
 
 # Default values (can be overridden via environment)
 API_URL="${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
