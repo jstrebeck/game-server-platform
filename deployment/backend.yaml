@@ -1,17 +1,66 @@
-apiVersion: v1
-kind: Secret
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: watch2play-backend-secret
+  name: watch2play-backend
+  labels:
+    app: watch2play-backend
   namespace: watch2play
-type: Opaque
-stringData:
-  AUTH0_DOMAIN: dev-86acntfmvqywrg0y.us.auth0.com
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: watch2play-backend
+  template:
+    metadata:
+      labels:
+        app: watch2play-backend
+    spec:
+      serviceAccountName: watch2play-backend
+      containers:
+      - name: watch2play-backend
+        image: 192.168.2.203:5000/watch2play-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: AUTH0_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: AUTH0_DOMAIN
+        - name: AUTH0_AUDIENCE
+          value: "https://api.watch2play.local"
+        - name: AUTH0_ALGORITHMS
+          value: "RS256"
+        - name: ALLOWED_ORIGINS
+          value: "https://minecrafthosting.gg, https://static.cloudflareinsights.com"
+        - name: MC_HOSTNAME_BASE
+          value: "infinabyte.com"
+        # Auth0 Management API credentials (for admin impersonation)
+        - name: AUTH0_MGMT_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: AUTH0_MGMT_CLIENT_ID
+        - name: AUTH0_MGMT_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: AUTH0_MGMT_CLIENT_SECRET
 ---
 apiVersion: v1
-kind: ServiceAccount
+kind: Service
 metadata:
   name: watch2play-backend
   namespace: watch2play
+spec:
+  type: LoadBalancer
+  selector:
+    app: watch2play-backend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -56,56 +105,8 @@ roleRef:
   name: watch2play-backend
   apiGroup: rbac.authorization.k8s.io
 ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: watch2play-backend
-  labels:
-    app: watch2play-backend
-  namespace: watch2play
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: watch2play-backend
-  template:
-    metadata:
-      labels:
-        app: watch2play-backend
-    spec:
-      serviceAccountName: watch2play-backend
-      containers:
-      - name: watch2play-backend
-        image: 192.168.2.203:5000/watch2play-backend:latest
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8000
-        env:
-        - name: AUTH0_DOMAIN
-          valueFrom:
-            secretKeyRef:
-              name: watch2play-backend-secret
-              key: AUTH0_DOMAIN
-        - name: AUTH0_AUDIENCE
-          value: "https://api.watch2play.local"
-        - name: AUTH0_ALGORITHMS
-          value: "RS256"
-        - name: ALLOWED_ORIGINS
-          value: "https://minecrafthosting.gg, https://static.cloudflareinsights.com"
-        - name: MC_HOSTNAME_BASE
-          value: "infinabyte.com"
----
 apiVersion: v1
-kind: Service
+kind: ServiceAccount
 metadata:
   name: watch2play-backend
   namespace: watch2play
-spec:
-  type: LoadBalancer
-  selector:
-    app: watch2play-backend
-  ports:
-  - name: http
-    port: 80
-    targetPort: 8000
-

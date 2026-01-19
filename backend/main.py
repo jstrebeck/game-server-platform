@@ -8,12 +8,15 @@ from dotenv import load_dotenv
 import shutil
 import tempfile
 import zipfile
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config, watch
+from pydantic import BaseModel
+from typing import Optional
 
-from auth.dependencies import get_user_id
+from auth.dependencies import get_user_id, get_effective_user_id, require_admin, sanitize_user_id
 from auth.websocket_auth import authenticate_websocket
+from auth import auth0_management
 from k8s.k8s_manager import K8sManager
 from k8s.velocity_manager import VelocityManager
 from models.game_models import GameServerResponse
@@ -48,7 +51,7 @@ def create_game_server(
     game: str = "minecraft",
     memory: str = "2G",
     version: str = "LATEST",
-    user_id: str = Depends(get_user_id)
+    user_id: str = Depends(get_effective_user_id)
 ):
     """Create a new game server for the authenticated user"""
     # Load local kubeconfig or in-cluster credentials
@@ -205,7 +208,7 @@ echo "Paper Velocity config written"
 
 
 @app.post("/gameserver/stop")
-def stop_server(user_id: str = Depends(get_user_id)):
+def stop_server(user_id: str = Depends(get_effective_user_id)):
     """Stop the game server for the authenticated user"""
     namespace = f"server-{user_id}"
     k8s.scale_deployment(namespace, "minecraft", 0)
@@ -213,7 +216,7 @@ def stop_server(user_id: str = Depends(get_user_id)):
 
 
 @app.post("/gameserver/start")
-def start_server(user_id: str = Depends(get_user_id)):
+def start_server(user_id: str = Depends(get_effective_user_id)):
     """Start the game server for the authenticated user"""
     namespace = f"server-{user_id}"
     k8s.scale_deployment(namespace, "minecraft", 1)
@@ -221,7 +224,7 @@ def start_server(user_id: str = Depends(get_user_id)):
 
 
 @app.delete("/gameserver")
-def delete_server(user_id: str = Depends(get_user_id)):
+def delete_server(user_id: str = Depends(get_effective_user_id)):
     """Delete the game server for the authenticated user"""
     namespace = f"server-{user_id}"
     hostname = f"{user_id}.{MC_HOSTNAME_BASE}"
@@ -257,7 +260,7 @@ def delete_server(user_id: str = Depends(get_user_id)):
 
 
 @app.get("/gameserver")
-def get_server(user_id: str = Depends(get_user_id)):
+def get_server(user_id: str = Depends(get_effective_user_id)):
     """Get existing server information for the authenticated user"""
     namespace = f"server-{user_id}"
     hostname = f"{user_id}.{MC_HOSTNAME_BASE}"
@@ -304,7 +307,7 @@ def get_server(user_id: str = Depends(get_user_id)):
 
 
 @app.get("/gameserver/pods")
-def get_pods(user_id: str = Depends(get_user_id)):
+def get_pods(user_id: str = Depends(get_effective_user_id)):
     """Get list of pods for the authenticated user's namespace"""
     namespace = f"server-{user_id}"
     try:
@@ -335,7 +338,7 @@ PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://kube-prometheus-stack-prome
 
 
 @app.get("/gameserver/metrics")
-def get_metrics(user_id: str = Depends(get_user_id)):
+def get_metrics(user_id: str = Depends(get_effective_user_id)):
     """Get resource metrics (RAM usage) for the authenticated user's game server"""
     import httpx
 
@@ -402,7 +405,7 @@ POPULAR_PLUGINS = [
 
 
 @app.post("/gameserver/op/{player_name}")
-def op_player(player_name: str, user_id: str = Depends(get_user_id)):
+def op_player(player_name: str, user_id: str = Depends(get_effective_user_id)):
     """Give operator permissions to a player"""
     from kubernetes.stream import stream
 
@@ -461,7 +464,7 @@ def get_available_plugins():
 
 
 @app.get("/gameserver/plugins")
-def get_installed_plugins(user_id: str = Depends(get_user_id)):
+def get_installed_plugins(user_id: str = Depends(get_effective_user_id)):
     """Get list of plugins installed on the user's server"""
     namespace = f"server-{user_id}"
 
@@ -498,7 +501,7 @@ def get_installed_plugins(user_id: str = Depends(get_user_id)):
 
 
 @app.post("/gameserver/plugins/{plugin_id}")
-def install_plugin(plugin_id: str, user_id: str = Depends(get_user_id)):
+def install_plugin(plugin_id: str, user_id: str = Depends(get_effective_user_id)):
     """Install a plugin on the user's server"""
     # Find the plugin
     plugin = next((p for p in POPULAR_PLUGINS if p["id"] == plugin_id), None)
@@ -563,7 +566,7 @@ def install_plugin(plugin_id: str, user_id: str = Depends(get_user_id)):
 
 
 @app.delete("/gameserver/plugins/{plugin_id}")
-def uninstall_plugin(plugin_id: str, user_id: str = Depends(get_user_id)):
+def uninstall_plugin(plugin_id: str, user_id: str = Depends(get_effective_user_id)):
     """Uninstall a plugin from the user's server"""
     # Find the plugin
     plugin = next((p for p in POPULAR_PLUGINS if p["id"] == plugin_id), None)
@@ -627,7 +630,7 @@ MAX_UPLOAD_SIZE = 500 * 1024 * 1024
 
 
 @app.post("/gameserver/world/upload")
-async def upload_world(file: UploadFile = File(...), user_id: str = Depends(get_user_id)):
+async def upload_world(file: UploadFile = File(...), user_id: str = Depends(get_effective_user_id)):
     """Upload a world save to the user's Minecraft server.
 
     The server must be stopped before uploading a world.
@@ -814,6 +817,108 @@ async def upload_world(file: UploadFile = File(...), user_id: str = Depends(get_
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# ===================================
+# Admin Endpoints
+# ===================================
+
+class ImpersonateRequest(BaseModel):
+    user_id: str
+
+
+class ImpersonateResponse(BaseModel):
+    user_id: str
+    sanitized_id: str
+    email: Optional[str] = None
+    is_admin: bool
+
+
+@app.get("/admin/users")
+def admin_list_users(
+    search: str = Query("", description="Search query for users"),
+    page: int = Query(0, ge=0, description="Page number"),
+    per_page: int = Query(50, ge=1, le=100, description="Users per page"),
+    admin_user: dict = Depends(require_admin)
+):
+    """List users from Auth0. Requires admin role."""
+    try:
+        result = auth0_management.list_users(search=search, page=page, per_page=per_page)
+
+        # Enhance user data with admin status
+        users_with_roles = []
+        for user in result["users"]:
+            user_id = user.get("user_id", "")
+            is_admin = auth0_management.is_user_admin(user_id)
+            users_with_roles.append({
+                **user,
+                "is_admin": is_admin,
+                "sanitized_id": sanitize_user_id(user_id)
+            })
+
+        return {
+            "users": users_with_roles,
+            "total": result["total"],
+            "page": result["page"],
+            "per_page": result["per_page"]
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error listing users: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list users")
+
+
+@app.post("/admin/impersonate", response_model=ImpersonateResponse)
+def admin_impersonate(
+    request: ImpersonateRequest,
+    admin_user: dict = Depends(require_admin)
+):
+    """
+    Validate and prepare impersonation of a user.
+    Returns the user info if impersonation is allowed.
+    """
+    target_user_id = request.user_id
+
+    # Check if target user is an admin
+    if auth0_management.is_user_admin(target_user_id):
+        logger.warning(
+            f"Admin {admin_user['sub']} attempted to impersonate admin user {target_user_id}"
+        )
+        raise HTTPException(status_code=403, detail="Cannot impersonate admin users")
+
+    # Get user details from Auth0
+    try:
+        result = auth0_management.list_users(search=target_user_id, per_page=1)
+        users = result.get("users", [])
+
+        # Find exact match
+        target_user = None
+        for user in users:
+            if user.get("user_id") == target_user_id:
+                target_user = user
+                break
+
+        if not target_user:
+            # Try to get user directly
+            target_user = {"user_id": target_user_id, "email": None}
+
+    except Exception as e:
+        logger.error(f"Error fetching user {target_user_id}: {e}")
+        target_user = {"user_id": target_user_id, "email": None}
+
+    # Log the impersonation start
+    logger.info(
+        f"IMPERSONATION START: Admin {admin_user['sub']} ({admin_user.get('email', 'unknown')}) "
+        f"is starting impersonation of user {target_user_id}"
+    )
+
+    return ImpersonateResponse(
+        user_id=target_user_id,
+        sanitized_id=sanitize_user_id(target_user_id),
+        email=target_user.get("email"),
+        is_admin=False
+    )
+
+
 executor = ThreadPoolExecutor(max_workers=5)
 
 
@@ -884,8 +989,8 @@ async def websocket_logs(websocket: WebSocket, namespace: str, pod_name: str):
         logger.warning(f"WebSocket authentication failed: {e}")
         return
 
-    # Verify the user has access to this namespace
-    expected_namespace = f"server-{user_info['user_id']}"
+    # Verify the user has access to this namespace (using effective_user_id for impersonation support)
+    expected_namespace = f"server-{user_info['effective_user_id']}"
     if namespace != expected_namespace:
         logger.warning(f"User {user_info['sub']} attempted to access namespace {namespace}, expected {expected_namespace}")
         await websocket.close(code=4003)  # Custom code for forbidden

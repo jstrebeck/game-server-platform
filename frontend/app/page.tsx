@@ -75,6 +75,13 @@ export default function Home() {
   const [uploadLoading, setUploadLoading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Admin impersonation state
+  const [impersonating, setImpersonating] = useState<{ userId: string; sanitizedId: string; email: string | null } | null>(null)
+  const [adminUsers, setAdminUsers] = useState<any[]>([])
+  const [userSearchQuery, setUserSearchQuery] = useState('')
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [usersTotal, setUsersTotal] = useState(0)
   const wsRef = useRef<WebSocket | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -98,7 +105,7 @@ export default function Home() {
     }
   }, [])
 
-  // Auto-check for existing server when user is authenticated
+  // Auto-check for existing server when user is authenticated or impersonation changes
   useEffect(() => {
     async function checkExistingServer() {
       if (!user || authLoading) return
@@ -107,11 +114,16 @@ export default function Home() {
       if (!token) return
 
       try {
-        const res = await fetch(`${API_URL}/gameserver`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        })
+        const headers: Record<string, string> = {
+          'Authorization': `Bearer ${token}`,
+        }
+
+        // Add impersonation header if active
+        if (impersonating) {
+          headers['X-Impersonate-User'] = impersonating.userId
+        }
+
+        const res = await fetch(`${API_URL}/gameserver`, { headers })
 
         if (res.ok) {
           const data = await res.json()
@@ -131,7 +143,7 @@ export default function Home() {
     }
 
     checkExistingServer()
-  }, [user, authLoading])
+  }, [user, authLoading, impersonating])
 
   // Helper function for authenticated API calls
   async function fetchWithAuth(url: string, options: RequestInit = {}) {
@@ -157,13 +169,20 @@ export default function Home() {
       }
     }
 
+    const headers: Record<string, string> = {
+      ...options.headers as Record<string, string>,
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/json',
+    }
+
+    // Add impersonation header if active
+    if (impersonating) {
+      headers['X-Impersonate-User'] = impersonating.userId
+    }
+
     return fetch(url, {
       ...options,
-      headers: {
-        ...options.headers,
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json',
-      },
+      headers,
     })
   }
 
@@ -367,6 +386,86 @@ export default function Home() {
     uploadWorld(file)
   }
 
+  // Admin functions
+  async function searchUsers(query: string = '') {
+    if (!isAdmin(user)) return
+
+    setUsersLoading(true)
+    try {
+      const token = await getAccessToken()
+      if (!token) return
+
+      const params = new URLSearchParams()
+      if (query) params.set('search', query)
+      params.set('per_page', '50')
+
+      const res = await fetch(`${API_URL}/admin/users?${params}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+        },
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setAdminUsers(data.users || [])
+        setUsersTotal(data.total || 0)
+      } else {
+        console.error('Failed to fetch users:', res.status)
+        setError('Failed to load users')
+      }
+    } catch (err) {
+      console.error('Error fetching users:', err)
+      setError('Failed to load users')
+    } finally {
+      setUsersLoading(false)
+    }
+  }
+
+  async function startImpersonation(targetUserId: string) {
+    if (!isAdmin(user)) return
+
+    try {
+      const token = await getAccessToken()
+      if (!token) return
+
+      const res = await fetch(`${API_URL}/admin/impersonate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ user_id: targetUserId }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setImpersonating({
+          userId: data.user_id,
+          sanitizedId: data.sanitized_id,
+          email: data.email,
+        })
+        // Reset server state to trigger re-fetch
+        setResult(null)
+        setServerExists(null)
+      } else {
+        const data = await res.json()
+        setError(data.detail || 'Failed to impersonate user')
+      }
+    } catch (err) {
+      console.error('Error starting impersonation:', err)
+      setError('Failed to impersonate user')
+    }
+  }
+
+  function stopImpersonation() {
+    setImpersonating(null)
+    // Reset server state to trigger re-fetch as the original user
+    setResult(null)
+    setServerExists(null)
+  }
+
   async function connectToLogs(namespace: string, podName: string) {
     // Close existing connection if any
     if (wsRef.current) {
@@ -383,7 +482,12 @@ export default function Home() {
     setShowLogs(true)
 
     // Pass token as query parameter for WebSocket auth
-    const ws = new WebSocket(`${WS_URL}/ws/logs/${namespace}/${podName}?token=${encodeURIComponent(token)}`)
+    // Include impersonation user ID if active
+    let wsUrl = `${WS_URL}/ws/logs/${namespace}/${podName}?token=${encodeURIComponent(token)}`
+    if (impersonating) {
+      wsUrl += `&impersonate=${encodeURIComponent(impersonating.userId)}`
+    }
+    const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
       console.log('WebSocket connected')
@@ -429,7 +533,9 @@ export default function Home() {
       if (data.pods && data.pods.length > 0) {
         // Connect to the first pod (typically the minecraft server)
         const podName = data.pods[0].name
-        const namespace = `server-${userId}`
+        // Use impersonated user's ID if impersonating, otherwise use own ID
+        const effectiveUserId = impersonating ? impersonating.sanitizedId : userId
+        const namespace = `server-${effectiveUserId}`
         connectToLogs(namespace, podName)
       } else {
         alert('No pods found. The server might still be starting up.')
@@ -774,7 +880,25 @@ export default function Home() {
   // Authenticated user view
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl">
+      {/* Impersonation Banner */}
+      {impersonating && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-4 shadow-lg">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <span className="font-medium">
+            Impersonating: {impersonating.email || impersonating.userId}
+          </span>
+          <button
+            onClick={stopImpersonation}
+            className="px-3 py-1 bg-black/20 hover:bg-black/30 rounded-lg text-sm font-medium transition-colors"
+          >
+            Exit Impersonation
+          </button>
+        </div>
+      )}
+
+      <div className={`w-full max-w-2xl ${impersonating ? 'pt-12' : ''}`}>
         {/* Header with user info */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-2">
@@ -1276,24 +1400,117 @@ export default function Home() {
                     <span className="text-amber-400 font-medium">Admin Panel</span>
                   </div>
 
-                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-                    <p className="text-amber-200 text-sm">
-                      You have administrator access. Admin features will appear here.
-                    </p>
-                  </div>
+                  {/* Current Impersonation Status */}
+                  {impersonating && (
+                    <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-amber-200 text-sm font-medium">Currently Impersonating</p>
+                          <p className="text-amber-100">{impersonating.email || impersonating.userId}</p>
+                        </div>
+                        <button
+                          onClick={stopImpersonation}
+                          className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 rounded-lg text-amber-200 text-sm font-medium transition-colors"
+                        >
+                          Exit
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-                  {/* Placeholder for admin features */}
+                  {/* User Search */}
                   <div className="p-4 bg-slate-800/50 rounded-lg">
-                    <h4 className="text-white font-medium mb-2">Admin Features</h4>
-                    <p className="text-slate-400 text-sm">
-                      Add your admin-specific functionality here, such as:
+                    <h4 className="text-white font-medium mb-3">User Impersonation</h4>
+                    <p className="text-slate-400 text-sm mb-3">
+                      Search for a user to impersonate and view their server as them.
                     </p>
-                    <ul className="text-slate-400 text-sm mt-2 space-y-1 list-disc list-inside">
-                      <li>View all user servers</li>
-                      <li>System statistics</li>
-                      <li>User management</li>
-                      <li>Global settings</li>
-                    </ul>
+
+                    <div className="flex gap-2 mb-4">
+                      <input
+                        type="text"
+                        value={userSearchQuery}
+                        onChange={(e) => setUserSearchQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && searchUsers(userSearchQuery)}
+                        placeholder="Search by email or name..."
+                        className="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 text-sm focus:outline-none focus:border-amber-500"
+                      />
+                      <button
+                        onClick={() => searchUsers(userSearchQuery)}
+                        disabled={usersLoading}
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+                      >
+                        {usersLoading ? 'Loading...' : 'Search'}
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={() => searchUsers('')}
+                      disabled={usersLoading}
+                      className="w-full py-2 mb-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+                    >
+                      {usersLoading ? 'Loading...' : 'Load All Users'}
+                    </button>
+
+                    {/* User List */}
+                    {adminUsers.length > 0 && (
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        <p className="text-slate-500 text-xs mb-2">
+                          Showing {adminUsers.length} of {usersTotal} users
+                        </p>
+                        {adminUsers.map((u) => (
+                          <div
+                            key={u.user_id}
+                            className="p-3 bg-slate-900/50 rounded-lg flex items-center justify-between gap-3"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              {u.picture && (
+                                <img
+                                  src={u.picture}
+                                  alt=""
+                                  className="w-8 h-8 rounded-full flex-shrink-0"
+                                />
+                              )}
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-white text-sm font-medium truncate">
+                                    {u.name || u.email || u.user_id}
+                                  </span>
+                                  {u.is_admin && (
+                                    <span className="px-2 py-0.5 text-xs bg-amber-500/20 text-amber-400 rounded-full flex-shrink-0">
+                                      Admin
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-slate-400 text-xs truncate">{u.email}</p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => startImpersonation(u.user_id)}
+                              disabled={u.is_admin || impersonating?.userId === u.user_id}
+                              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex-shrink-0 ${
+                                u.is_admin
+                                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                                  : impersonating?.userId === u.user_id
+                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                  : 'bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 border border-indigo-500/30'
+                              }`}
+                            >
+                              {impersonating?.userId === u.user_id
+                                ? 'Active'
+                                : u.is_admin
+                                ? 'Admin'
+                                : 'Impersonate'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {adminUsers.length === 0 && !usersLoading && (
+                      <p className="text-slate-500 text-sm text-center py-4">
+                        Click "Load All Users" or search to see users
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
