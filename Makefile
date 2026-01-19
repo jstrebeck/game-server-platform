@@ -3,7 +3,7 @@ build-local:
 	cd ./backend
 	./scripts/build.sh
 	cd ../frontend
-	NEXT_PUBLIC_API_URL="http://localhost:3000" ./scripts/build.sh
+	NEXT_PUBLIC_API_URL="http://localhost:8000" ./scripts/build.sh
 
 run: build-local
 	docker stop watch2play-frontend

@@ -14,7 +14,7 @@ def minecraft_pvc(game: str, storage: str = "10Gi"):
     )
 
 
-def minecraft_deployment(game: str, memory: str, pvc_name: str = None):
+def minecraft_deployment(game: str, memory: str, version: str = "LATEST", pvc_name: str = None):
     """Create a Minecraft server deployment with optional persistent storage"""
     pvc_name = pvc_name or f"{game}-data"
 
@@ -25,6 +25,7 @@ def minecraft_deployment(game: str, memory: str, pvc_name: str = None):
         env=[
             client.V1EnvVar(name="EULA", value="TRUE"),
             client.V1EnvVar(name="MEMORY", value=memory),
+            client.V1EnvVar(name="VERSION", value=version),
             # Velocity proxy configuration
             client.V1EnvVar(name="ONLINE_MODE", value="FALSE"),
             client.V1EnvVar(name="TYPE", value="PAPER"),

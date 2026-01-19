@@ -6,6 +6,13 @@ import { useAccessToken } from '@/components/AccessTokenProvider'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const WS_URL = API_URL.replace(/^http/, 'ws')
+const AUTH0_NAMESPACE = 'https://watch2play.local'
+
+// Check if user has admin role
+function isAdmin(user: any): boolean {
+  const roles = user?.[`${AUTH0_NAMESPACE}/roles`] || []
+  return Array.isArray(roles) && roles.includes('Admin')
+}
 
 // Check if JWT token is expired
 function isTokenExpired(token: string): boolean {
@@ -32,17 +39,42 @@ export default function Home() {
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
   const [serverExists, setServerExists] = useState<boolean | null>(null) // null = unknown, true = exists, false = doesn't exist
+  const [selectedVersion, setSelectedVersion] = useState('LATEST')
+
+  // Available Minecraft versions
+  const minecraftVersions = [
+    { value: 'LATEST', label: 'Latest' },
+    { value: '1.21.11', label: '1.21.11' },
+    { value: '1.21.4', label: '1.21.4' },
+    { value: '1.21.3', label: '1.21.3' },
+    { value: '1.21.1', label: '1.21.1' },
+    { value: '1.21', label: '1.21' },
+    { value: '1.20.6', label: '1.20.6' },
+    { value: '1.20.4', label: '1.20.4' },
+    { value: '1.20.2', label: '1.20.2' },
+    { value: '1.20.1', label: '1.20.1' },
+    { value: '1.20', label: '1.20' },
+    { value: '1.19.4', label: '1.19.4' },
+    { value: '1.19.2', label: '1.19.2' },
+    { value: '1.18.2', label: '1.18.2' },
+    { value: '1.17.1', label: '1.17.1' },
+    { value: '1.16.5', label: '1.16.5' },
+    { value: '1.12.2', label: '1.12.2' },
+  ]
   const [logs, setLogs] = useState<string[]>([])
   const [wsConnected, setWsConnected] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [metrics, setMetrics] = useState<{ memory_bytes: number; memory_human: string } | null>(null)
-  const [activeTab, setActiveTab] = useState<'details' | 'monitoring' | 'operations' | 'plugins'>('details')
+  const [activeTab, setActiveTab] = useState<'details' | 'monitoring' | 'operations' | 'plugins' | 'admin'>('details')
   const [availablePlugins, setAvailablePlugins] = useState<any[]>([])
   const [installedPlugins, setInstalledPlugins] = useState<any[]>([])
   const [pluginLoading, setPluginLoading] = useState<string | null>(null)
   const [opPlayerName, setOpPlayerName] = useState('')
   const [opLoading, setOpLoading] = useState(false)
   const [opMessage, setOpMessage] = useState<string | null>(null)
+  const [uploadLoading, setUploadLoading] = useState(false)
+  const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -274,6 +306,67 @@ export default function Home() {
     }
   }
 
+  async function uploadWorld(file: File) {
+    setUploadLoading(true)
+    setUploadMessage(null)
+
+    try {
+      const token = await getAccessToken()
+      if (!token) {
+        setUploadMessage({ type: 'error', text: 'Authentication required' })
+        return
+      }
+
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await fetch(`${API_URL}/gameserver/world/upload`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        setUploadMessage({ type: 'success', text: data.message || 'World uploaded successfully! Start your server to play.' })
+      } else {
+        setUploadMessage({ type: 'error', text: data.detail || 'Failed to upload world' })
+      }
+    } catch (err) {
+      console.error('Failed to upload world:', err)
+      setUploadMessage({ type: 'error', text: 'Failed to upload world. Please try again.' })
+    } finally {
+      setUploadLoading(false)
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Validate file type
+    if (!file.name.endsWith('.zip')) {
+      setUploadMessage({ type: 'error', text: 'Please select a .zip file' })
+      return
+    }
+
+    // Validate file size (500MB max)
+    const maxSize = 500 * 1024 * 1024
+    if (file.size > maxSize) {
+      setUploadMessage({ type: 'error', text: 'File too large. Maximum size is 500MB.' })
+      return
+    }
+
+    uploadWorld(file)
+  }
+
   async function connectToLogs(namespace: string, podName: string) {
     // Close existing connection if any
     if (wsRef.current) {
@@ -490,7 +583,7 @@ export default function Home() {
 
     try {
       const res = await fetchWithAuth(
-        `${API_URL}/gameserver?game=minecraft&memory=2G`,
+        `${API_URL}/gameserver?game=minecraft&memory=2G&version=${selectedVersion}`,
         { method: 'POST' }
       )
 
@@ -550,7 +643,7 @@ export default function Home() {
         <div className="flex flex-col items-center justify-center min-h-screen p-4">
           <div className="text-center max-w-4xl mx-auto">
             <h1 className="text-5xl md:text-6xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-4">
-              Watch2Play
+              Minecraft Hosting
             </h1>
             <p className="text-slate-300 mb-2 text-xl md:text-2xl font-medium">On-Demand Minecraft Server Hosting</p>
             <p className="text-slate-400 mb-8 text-base md:text-lg max-w-2xl mx-auto">
@@ -685,7 +778,7 @@ export default function Home() {
         {/* Header with user info */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-2">
-            Watch2Play
+            Minecraft Hosting
           </h1>
           <p className="text-slate-400 mb-4">On-Demand Minecraft Server Hosting</p>
           <div className="flex items-center justify-center gap-3">
@@ -718,28 +811,49 @@ export default function Home() {
                   </span>
                 </div>
               ) : serverExists === false ? (
-                <button
-                  onClick={createServer}
-                  disabled={loading}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none"
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      Creating...
-                    </span>
-                  ) : (
-                    <span className="flex items-center justify-center gap-2">
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                      </svg>
-                      Create New Server
-                    </span>
-                  )}
-                </button>
+                <div className="w-full space-y-4">
+                  {/* Version Selector */}
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-slate-400 text-left">Minecraft Version</label>
+                    <select
+                      value={selectedVersion}
+                      onChange={(e) => setSelectedVersion(e.target.value)}
+                      disabled={loading}
+                      className="w-full py-3 px-4 rounded-xl bg-slate-800 border border-slate-700 text-white font-medium focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed appearance-none cursor-pointer"
+                      style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '1.5rem' }}
+                    >
+                      {minecraftVersions.map((v) => (
+                        <option key={v.value} value={v.value}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Create Button */}
+                  <button
+                    onClick={createServer}
+                    disabled={loading}
+                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none"
+                  >
+                    {loading ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        Creating...
+                      </span>
+                    ) : (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                        Create New Server
+                      </span>
+                    )}
+                  </button>
+                </div>
               ) : (
                 <button
                   onClick={getExistingServer}
@@ -846,6 +960,21 @@ export default function Home() {
                     <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
                   )}
                 </button>
+                {isAdmin(user) && (
+                  <button
+                    onClick={() => setActiveTab('admin')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                      activeTab === 'admin'
+                        ? 'text-amber-400'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Admin
+                    {activeTab === 'admin' && (
+                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-400" />
+                    )}
+                  </button>
+                )}
                 <div className="flex-1" />
                 <span className={`px-3 py-1 rounded-full text-xs font-medium ${
                   result.status === 'ready'
@@ -964,8 +1093,9 @@ export default function Home() {
 
               {/* Operations Tab */}
               {activeTab === 'operations' && (
-                <div className="space-y-3 mb-4">
-                  {result.status === 'ready' ? (
+                <div className="space-y-4 mb-4">
+                  {/* OP Player Section - only when server is running */}
+                  {result.status === 'ready' && (
                     <div className="p-3 bg-slate-800/50 rounded-lg">
                       <span className="text-slate-400 text-sm block mb-2">Give Operator Permissions</span>
                       <div className="flex gap-2">
@@ -997,11 +1127,93 @@ export default function Home() {
                         </p>
                       )}
                     </div>
-                  ) : (
-                    <div className="text-center py-8 text-slate-500">
-                      Start the server to access operations
-                    </div>
                   )}
+
+                  {/* World Upload Section */}
+                  <div className="p-4 bg-slate-800/50 rounded-lg">
+                    <div className="flex items-center gap-2 mb-2">
+                      <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span className="text-white font-medium">Upload World Save</span>
+                    </div>
+                    <p className="text-slate-400 text-sm mb-3">
+                      Upload a .zip file containing your Minecraft world save. This will replace the current world data.
+                    </p>
+
+                    {result.status === 'stopped' ? (
+                      <>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept=".zip"
+                          onChange={handleFileSelect}
+                          className="hidden"
+                          disabled={uploadLoading}
+                        />
+                        <button
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={uploadLoading}
+                          className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-amber-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
+                        >
+                          {uploadLoading ? (
+                            <>
+                              <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                              </svg>
+                              Uploading...
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                              </svg>
+                              Select World File (.zip)
+                            </>
+                          )}
+                        </button>
+                        <p className="text-slate-500 text-xs mt-2 text-center">Maximum file size: 500MB</p>
+                      </>
+                    ) : (
+                      <div className="py-3 px-4 bg-slate-900/50 rounded-lg text-center">
+                        <svg className="w-6 h-6 text-slate-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
+                        <p className="text-slate-400 text-sm">Stop the server to upload a world</p>
+                      </div>
+                    )}
+
+                    {/* Upload Message */}
+                    {uploadMessage && (
+                      <div className={`mt-3 p-3 rounded-lg flex items-start gap-2 ${
+                        uploadMessage.type === 'success'
+                          ? 'bg-green-500/10 border border-green-500/30'
+                          : 'bg-red-500/10 border border-red-500/30'
+                      }`}>
+                        {uploadMessage.type === 'success' ? (
+                          <svg className="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        )}
+                        <p className={`text-sm ${uploadMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                          {uploadMessage.text}
+                        </p>
+                        <button
+                          onClick={() => setUploadMessage(null)}
+                          className={`ml-auto ${uploadMessage.type === 'success' ? 'text-green-400 hover:text-green-300' : 'text-red-400 hover:text-red-300'}`}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1051,6 +1263,38 @@ export default function Home() {
                       Loading plugins...
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Admin Tab */}
+              {activeTab === 'admin' && isAdmin(user) && (
+                <div className="space-y-4 mb-4">
+                  <div className="flex items-center gap-2 mb-4">
+                    <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                    </svg>
+                    <span className="text-amber-400 font-medium">Admin Panel</span>
+                  </div>
+
+                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                    <p className="text-amber-200 text-sm">
+                      You have administrator access. Admin features will appear here.
+                    </p>
+                  </div>
+
+                  {/* Placeholder for admin features */}
+                  <div className="p-4 bg-slate-800/50 rounded-lg">
+                    <h4 className="text-white font-medium mb-2">Admin Features</h4>
+                    <p className="text-slate-400 text-sm">
+                      Add your admin-specific functionality here, such as:
+                    </p>
+                    <ul className="text-slate-400 text-sm mt-2 space-y-1 list-disc list-inside">
+                      <li>View all user servers</li>
+                      <li>System statistics</li>
+                      <li>User management</li>
+                      <li>Global settings</li>
+                    </ul>
+                  </div>
                 </div>
               )}
 

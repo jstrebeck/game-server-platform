@@ -5,7 +5,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
+import shutil
+import tempfile
+import zipfile
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config, watch
 
@@ -44,6 +47,7 @@ app.add_middleware(
 def create_game_server(
     game: str = "minecraft",
     memory: str = "2G",
+    version: str = "LATEST",
     user_id: str = Depends(get_user_id)
 ):
     """Create a new game server for the authenticated user"""
@@ -124,6 +128,7 @@ echo "Paper Velocity config written"
         env=[
             client.V1EnvVar(name="EULA", value="TRUE"),
             client.V1EnvVar(name="MEMORY", value=memory),
+            client.V1EnvVar(name="VERSION", value=version),
             # Velocity proxy configuration
             client.V1EnvVar(name="ONLINE_MODE", value="FALSE"),
             client.V1EnvVar(name="TYPE", value="PAPER"),
@@ -615,6 +620,198 @@ def uninstall_plugin(plugin_id: str, user_id: str = Depends(get_user_id)):
         if e.status == 404:
             raise HTTPException(status_code=404, detail="Server not found")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Maximum upload size: 500MB
+MAX_UPLOAD_SIZE = 500 * 1024 * 1024
+
+
+@app.post("/gameserver/world/upload")
+async def upload_world(file: UploadFile = File(...), user_id: str = Depends(get_user_id)):
+    """Upload a world save to the user's Minecraft server.
+
+    The server must be stopped before uploading a world.
+    Accepts a .zip file containing the world folder.
+    """
+    from kubernetes.stream import stream
+    import tarfile
+    import io
+
+    namespace = f"server-{user_id}"
+
+    # Validate file extension
+    if not file.filename or not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="File must be a .zip file")
+
+    # Check file size by reading in chunks
+    temp_dir = tempfile.mkdtemp()
+    temp_zip_path = os.path.join(temp_dir, "world.zip")
+
+    try:
+        # Save uploaded file to temp location
+        total_size = 0
+        with open(temp_zip_path, 'wb') as f:
+            while chunk := await file.read(1024 * 1024):  # Read 1MB at a time
+                total_size += len(chunk)
+                if total_size > MAX_UPLOAD_SIZE:
+                    raise HTTPException(status_code=413, detail="File too large. Maximum size is 500MB")
+                f.write(chunk)
+
+        logger.info(f"Received world upload: {file.filename}, size: {total_size} bytes")
+
+        # Validate zip file
+        if not zipfile.is_zipfile(temp_zip_path):
+            raise HTTPException(status_code=400, detail="Invalid zip file")
+
+        # Extract and validate world structure
+        extract_dir = os.path.join(temp_dir, "extracted")
+        os.makedirs(extract_dir)
+
+        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+            # Security: Check for path traversal attacks
+            for member in zip_ref.namelist():
+                member_path = os.path.normpath(member)
+                if member_path.startswith('..') or os.path.isabs(member_path):
+                    raise HTTPException(status_code=400, detail="Invalid zip file: contains unsafe paths")
+            zip_ref.extractall(extract_dir)
+
+        # Find the world folder (look for level.dat)
+        world_folder = None
+        for root, dirs, files in os.walk(extract_dir):
+            if 'level.dat' in files:
+                world_folder = root
+                break
+
+        if not world_folder:
+            raise HTTPException(status_code=400, detail="Invalid world: no level.dat found. Make sure you're uploading a valid Minecraft world.")
+
+        logger.info(f"Found valid world at: {world_folder}")
+
+        # Load kubernetes config
+        try:
+            config.load_incluster_config()
+        except:
+            config.load_kube_config()
+
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+
+        # Check if server exists and is stopped
+        try:
+            deployment = apps.read_namespaced_deployment(name="minecraft", namespace=namespace)
+            if deployment.spec.replicas > 0:
+                raise HTTPException(status_code=400, detail="Server must be stopped before uploading a world. Please stop your server first.")
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                raise HTTPException(status_code=404, detail="Server not found. Create a server first.")
+            raise
+
+        # Create a temporary pod to copy the world files
+        copy_pod_name = f"world-upload-{user_id[:20]}-{int(time.time())}"
+
+        copy_pod = client.V1Pod(
+            metadata=client.V1ObjectMeta(name=copy_pod_name),
+            spec=client.V1PodSpec(
+                restart_policy="Never",
+                containers=[
+                    client.V1Container(
+                        name="copy",
+                        image="busybox:latest",
+                        command=["sleep", "300"],  # Keep alive for 5 minutes
+                        volume_mounts=[
+                            client.V1VolumeMount(
+                                name="game-data",
+                                mount_path="/data"
+                            )
+                        ]
+                    )
+                ],
+                volumes=[
+                    client.V1Volume(
+                        name="game-data",
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name="minecraft-data"
+                        )
+                    )
+                ]
+            )
+        )
+
+        try:
+            # Create the copy pod
+            v1.create_namespaced_pod(namespace=namespace, body=copy_pod)
+            logger.info(f"Created copy pod: {copy_pod_name}")
+
+            # Wait for pod to be ready
+            for _ in range(30):  # Wait up to 30 seconds
+                pod = v1.read_namespaced_pod(name=copy_pod_name, namespace=namespace)
+                if pod.status.phase == "Running":
+                    break
+                time.sleep(1)
+            else:
+                raise HTTPException(status_code=500, detail="Timeout waiting for copy pod to start")
+
+            # Delete existing world folder
+            exec_command = ['rm', '-rf', '/data/world']
+            stream(
+                v1.connect_get_namespaced_pod_exec,
+                copy_pod_name,
+                namespace,
+                command=exec_command,
+                container='copy',
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False
+            )
+            logger.info("Deleted existing world folder")
+
+            # Create tar archive of the world folder
+            tar_buffer = io.BytesIO()
+            with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+                tar.add(world_folder, arcname='world')
+            tar_buffer.seek(0)
+            tar_data = tar_buffer.read()
+
+            # Copy via exec with tar
+            exec_command = ['tar', 'xf', '-', '-C', '/data']
+            resp = stream(
+                v1.connect_get_namespaced_pod_exec,
+                copy_pod_name,
+                namespace,
+                command=exec_command,
+                container='copy',
+                stderr=True,
+                stdin=True,
+                stdout=True,
+                tty=False,
+                _preload_content=False
+            )
+
+            # Send tar data
+            resp.write_stdin(tar_data)
+            resp.close()
+
+            logger.info("World files copied successfully")
+
+            return {"status": "success", "message": "World uploaded successfully. Start your server to play!"}
+
+        finally:
+            # Clean up the copy pod
+            try:
+                v1.delete_namespaced_pod(name=copy_pod_name, namespace=namespace)
+                logger.info(f"Deleted copy pod: {copy_pod_name}")
+            except:
+                pass
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"World upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 executor = ThreadPoolExecutor(max_workers=5)

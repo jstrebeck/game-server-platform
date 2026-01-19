@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Watch2Play",
-  description: "Free game servers!",
+  title: "Minecraft Hosting",
+  description: "On-demand Minecraft server hosting",
 };
 
 export default function RootLayout({
