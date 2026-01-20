@@ -93,6 +93,13 @@ export default function Home() {
     }
   }, [logs, showLogs])
 
+  // Default to admin tab for admins without a server
+  useEffect(() => {
+    if (isAdmin(user) && serverExists === false && !result) {
+      setActiveTab('admin')
+    }
+  }, [user, serverExists, result])
+
   // Cleanup WebSocket and metrics interval on unmount
   useEffect(() => {
     return () => {
@@ -716,6 +723,7 @@ export default function Home() {
       setResult(data)
       setServerExists(true)
       setError(null)
+      setActiveTab('details')  // Show Connect tab after creation
 
       // Start metrics polling if server is ready
       if (data.status === 'ready') {
@@ -1028,62 +1036,66 @@ export default function Home() {
           </div>
 
           {/* Server Status Section */}
-          {result && (
+          {(result || isAdmin(user)) && (
             <div className="border-t border-slate-800 bg-slate-900/50 p-6">
               {/* Tab Navigation */}
               <div className="flex items-center gap-1 mb-4 border-b border-slate-700">
-                <button
-                  onClick={() => setActiveTab('details')}
-                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                    activeTab === 'details'
-                      ? 'text-indigo-400'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Connect
-                  {activeTab === 'details' && (
-                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                  )}
-                </button>
-                <button
-                  onClick={() => setActiveTab('monitoring')}
-                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                    activeTab === 'monitoring'
-                      ? 'text-indigo-400'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Monitoring
-                  {activeTab === 'monitoring' && (
-                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                  )}
-                </button>
-                <button
-                  onClick={() => setActiveTab('operations')}
-                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                    activeTab === 'operations'
-                      ? 'text-indigo-400'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Operations
-                  {activeTab === 'operations' && (
-                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                  )}
-                </button>
-                <button
-                  onClick={() => setActiveTab('plugins')}
-                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                    activeTab === 'plugins'
-                      ? 'text-indigo-400'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Plugins
-                  {activeTab === 'plugins' && (
-                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                  )}
-                </button>
+                {result && (
+                  <>
+                    <button
+                      onClick={() => setActiveTab('details')}
+                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                        activeTab === 'details'
+                          ? 'text-indigo-400'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Connect
+                      {activeTab === 'details' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('monitoring')}
+                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                        activeTab === 'monitoring'
+                          ? 'text-indigo-400'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Monitoring
+                      {activeTab === 'monitoring' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('operations')}
+                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                        activeTab === 'operations'
+                          ? 'text-indigo-400'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Operations
+                      {activeTab === 'operations' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('plugins')}
+                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                        activeTab === 'plugins'
+                          ? 'text-indigo-400'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Plugins
+                      {activeTab === 'plugins' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
+                      )}
+                    </button>
+                  </>
+                )}
                 {isAdmin(user) && (
                   <button
                     onClick={() => setActiveTab('admin')}
@@ -1100,19 +1112,21 @@ export default function Home() {
                   </button>
                 )}
                 <div className="flex-1" />
-                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                  result.status === 'ready'
-                    ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                    : result.status === 'stopped'
-                    ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
-                    : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-                }`}>
-                  {result.status === 'ready' ? '● Ready' : result.status === 'stopped' ? '● Stopped' : '● Starting'}
-                </span>
+                {result && (
+                  <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                    result.status === 'ready'
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                      : result.status === 'stopped'
+                      ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+                      : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                  }`}>
+                    {result.status === 'ready' ? '● Ready' : result.status === 'stopped' ? '● Stopped' : '● Starting'}
+                  </span>
+                )}
               </div>
 
               {/* Details Tab */}
-              {activeTab === 'details' && (
+              {activeTab === 'details' && result && (
                 <div className="space-y-3 mb-4">
                   <div className="p-3 bg-slate-800/50 rounded-lg">
                     <span className="text-slate-400 text-sm block mb-1">Connect with</span>
@@ -1129,11 +1143,15 @@ export default function Home() {
                       </button>
                     </div>
                   </div>
+                  <div className="p-3 bg-slate-800/50 rounded-lg">
+                    <span className="text-slate-400 text-sm block mb-1">Minecraft Version</span>
+                    <span className="text-white font-medium">{result.version || 'Unknown'}</span>
+                  </div>
                 </div>
               )}
 
               {/* Monitoring Tab */}
-              {activeTab === 'monitoring' && (
+              {activeTab === 'monitoring' && result && (
                 <div className="space-y-4 mb-4">
                   {/* RAM Usage */}
                   {result.status === 'ready' && (
@@ -1216,7 +1234,7 @@ export default function Home() {
               )}
 
               {/* Operations Tab */}
-              {activeTab === 'operations' && (
+              {activeTab === 'operations' && result && (
                 <div className="space-y-4 mb-4">
                   {/* OP Player Section - only when server is running */}
                   {result.status === 'ready' && (
@@ -1342,7 +1360,7 @@ export default function Home() {
               )}
 
               {/* Plugins Tab */}
-              {activeTab === 'plugins' && (
+              {activeTab === 'plugins' && result && (
                 <div className="space-y-3 mb-4">
                   <p className="text-slate-400 text-sm mb-3">
                     Install popular plugins on your server. Restart required after changes.

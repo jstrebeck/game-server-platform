@@ -203,7 +203,8 @@ echo "Paper Velocity config written"
         "namespace": namespace,
         "hostname": hostname,
         "port": 25565,
-        "status": "ready"
+        "status": "ready",
+        "version": version
     }
 
 
@@ -294,11 +295,23 @@ def get_server(user_id: str = Depends(get_effective_user_id)):
         else:
             status = "starting"
 
+        # Extract version from deployment env vars
+        version = "Unknown"
+        containers = deployment.spec.template.spec.containers
+        for container in containers:
+            if container.name == "minecraft" and container.env:
+                for env in container.env:
+                    if env.name == "VERSION":
+                        version = env.value
+                        break
+                break
+
         return {
             "namespace": namespace,
             "hostname": hostname,
             "port": 25565,
-            "status": status
+            "status": status,
+            "version": version
         }
     except client.exceptions.ApiException as e:
         if e.status == 404:
