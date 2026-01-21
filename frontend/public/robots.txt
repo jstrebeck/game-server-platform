@@ -1,0 +1,10 @@
+# Robots.txt for MinecraftHosting.gg
+User-agent: *
+Allow: /
+
+# Disallow auth and API routes
+Disallow: /auth/
+Disallow: /api/
+
+# Sitemap location
+Sitemap: https://minecrafthosting.gg/sitemap.xml

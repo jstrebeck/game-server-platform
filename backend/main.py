@@ -139,13 +139,21 @@ echo "Paper Velocity config written"
     # Convert memory format for Kubernetes (e.g., "2G" -> "2Gi")
     memory_limit = memory.replace("G", "Gi")
 
+    # Calculate JVM heap size (reserve 512MB for JVM overhead: metaspace, native memory, GC)
+    memory_gb = int(memory.replace("G", ""))
+    max_heap_mb = memory_gb * 1024 - 512
+    # Start with ~33% of max heap (minimum 512MB) so metrics show actual usage, not pre-allocated
+    init_heap_mb = max(512, max_heap_mb // 3)
+
     container = client.V1Container(
         name=game,
         image="itzg/minecraft-server",
         ports=[client.V1ContainerPort(container_port=25565)],
         env=[
             client.V1EnvVar(name="EULA", value="TRUE"),
-            client.V1EnvVar(name="MEMORY", value=memory),
+            client.V1EnvVar(name="INIT_MEMORY", value=f"{init_heap_mb}M"),
+            client.V1EnvVar(name="MAX_MEMORY", value=f"{max_heap_mb}M"),
+            client.V1EnvVar(name="USE_AIKAR_FLAGS", value="TRUE"),
             client.V1EnvVar(name="VERSION", value=version),
             # Velocity proxy configuration
             client.V1EnvVar(name="ONLINE_MODE", value="FALSE"),
@@ -265,15 +273,41 @@ async def start_server(
         # Convert memory format for Kubernetes (e.g., "2G" -> "2Gi")
         memory_limit = memory.replace("G", "Gi")
 
-        # Find and update the MEMORY env var and resource limits
+        # Calculate JVM heap size (reserve 512MB for JVM overhead: metaspace, native memory, GC)
+        memory_gb = int(memory.replace("G", ""))
+        max_heap_mb = memory_gb * 1024 - 512
+        # Start with ~33% of max heap (minimum 512MB) so metrics show actual usage
+        init_heap_mb = max(512, max_heap_mb // 3)
+
+        # Find and update env vars and resource limits
         for container in deployment.spec.template.spec.containers:
             if container.name == "minecraft":
-                # Update MEMORY env var
                 if container.env:
-                    for env in container.env:
-                        if env.name == "MEMORY":
-                            env.value = memory
-                            break
+                    # Track which vars we've updated
+                    found_init = False
+                    found_max = False
+                    env_to_remove = []
+
+                    for i, env in enumerate(container.env):
+                        if env.name == "INIT_MEMORY":
+                            env.value = f"{init_heap_mb}M"
+                            found_init = True
+                        elif env.name == "MAX_MEMORY":
+                            env.value = f"{max_heap_mb}M"
+                            found_max = True
+                        elif env.name == "MEMORY":
+                            # Remove old MEMORY var (replaced by INIT/MAX)
+                            env_to_remove.append(i)
+
+                    # Remove old MEMORY vars (in reverse order to preserve indices)
+                    for i in reversed(env_to_remove):
+                        container.env.pop(i)
+
+                    # Add missing env vars
+                    if not found_init:
+                        container.env.append(client.V1EnvVar(name="INIT_MEMORY", value=f"{init_heap_mb}M"))
+                    if not found_max:
+                        container.env.append(client.V1EnvVar(name="MAX_MEMORY", value=f"{max_heap_mb}M"))
 
                 # Update resource limits
                 if container.resources is None:
@@ -282,7 +316,7 @@ async def start_server(
                 container.resources.requests = {"memory": memory_limit}
 
         apps.patch_namespaced_deployment(name="minecraft", namespace=namespace, body=deployment)
-        logger.info(f"Updated memory to {memory} (limit: {memory_limit}) for user {user_id}")
+        logger.info(f"Updated memory: plan={memory}, init={init_heap_mb}M, max={max_heap_mb}M, limit={memory_limit} for user {user_id}")
     except client.exceptions.ApiException as e:
         logger.error(f"Failed to update memory: {e}")
         # Continue anyway - server will start with previous memory setting
