@@ -63,6 +63,28 @@ export default function Home() {
   ]
   const [logs, setLogs] = useState<string[]>([])
   const [wsConnected, setWsConnected] = useState(false)
+  const [command, setCommand] = useState<string>('');
+
+  async function sendCommand() {
+    if (!command.trim()) return;
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/rcon`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setLogs(prev => [...prev, data.output]);
+      } else {
+        setLogs(prev => [...prev, `ERROR: ${data.detail || 'command failed'}`]);
+      }
+    } catch (err) {
+      setLogs(prev => [...prev, `ERROR: ${err}`]);
+    }
+    setCommand('');
+  }
+
   const [showLogs, setShowLogs] = useState(false)
   const [metrics, setMetrics] = useState<{ memory_bytes: number; memory_human: string } | null>(null)
   const [activeTab, setActiveTab] = useState<'details' | 'monitoring' | 'operations' | 'plugins' | 'billing' | 'admin'>('details')
@@ -2419,6 +2441,8 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <span>Logs update in real-time • {logs.length} line{logs.length !== 1 ? 's' : ''}</span>
+                <input type="text" placeholder="Enter command" value={command} onChange={e=>setCommand(e.target.value)} className="ml-auto bg-slate-800 text-sm px-2 py-1 rounded" />
+                <button onClick={sendCommand} className="px-2 py-1 rounded bg-indigo-600 text-white text-xs">Send</button>
               </div>
             </div>
           )}

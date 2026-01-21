@@ -10,14 +10,15 @@ import tempfile
 import zipfile
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Query, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from kubernetes import client, config, watch
+from kubernetes.stream import stream
+
 from pydantic import BaseModel
 from typing import Optional
 
 from auth.dependencies import get_user_id, get_effective_user_id, require_admin, sanitize_user_id, get_current_user
 from auth.websocket_auth import authenticate_websocket
 from auth import auth0_management
-from k8s.k8s_manager import K8sManager
+from kubernetes.stream import stream
 from k8s.velocity_manager import VelocityManager
 from models.game_models import GameServerResponse
 from billing.models import SubscriptionStatus, CheckoutResponse, PortalResponse, CheckoutRequest, AvailablePlansResponse, PlanInfo, PLANS, UpgradeResponse
@@ -518,7 +519,7 @@ POPULAR_PLUGINS = [
 ]
 
 
-@app.post("/gameserver/op/{player_name}")
+@app.post("/gameserver/rcon")
 def op_player(player_name: str, user_id: str = Depends(get_effective_user_id)):
     """Give operator permissions to a player"""
     from kubernetes.stream import stream
@@ -561,7 +562,38 @@ def op_player(player_name: str, user_id: str = Depends(get_effective_user_id)):
         )
 
         logger.info(f"OP command result for {player_name}: {result}")
-        return {"status": "success", "message": f"Opped {player_name}", "output": result}
+    def rcon_command(command: str, user_id: str = Depends(get_effective_user_id)):
+    """Send arbitrary RCON command to the user's Minecraft server"""
+    namespace = f"server-{user_id}"
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+    v1 = client.CoreV1Api()
+    try:
+        pods = v1.list_namespaced_pod(namespace=namespace, label_selector="app=minecraft")
+        if not pods.items:
+            raise HTTPException(status_code=404, detail="Server not found")
+        pod_name = pods.items[0].metadata.name
+        # Build command list for rcon-cli
+        cmd_parts = command.strip().split()
+        exec_command = ['rcon-cli'] + cmd_parts
+        result = stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=exec_command,
+            container='minecraft',
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False
+        )
+        return {"status": "success", "output": result}
+    except client.exceptions.ApiException as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except client.exceptions.ApiException as e:
         if e.status == 404:
             raise HTTPException(status_code=404, detail="Server not found")
