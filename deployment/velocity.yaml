@@ -8,7 +8,7 @@ data:
     # Velocity Configuration
     config-version = "2.7"
     bind = "0.0.0.0:25565"
-    motd = "Watch2Play Minecraft Network"
+    motd = "Minecraft Hosting Network"
     show-max-players = 100
     online-mode = true
     force-key-authentication = false
@@ -106,6 +106,8 @@ spec:
           value: "https://github.com/TCPShield/RealIP/releases/download/2.8.1/TCPShield-2.8.1.jar,https://cdn.modrinth.com/data/KkmSfl3v/versions/fSM522rY/Velocircon-1.0.5.jar"
         - name: RCON_PASSWORD
           value: "REDACTED"
+        - name: ICON
+          value: "https://minecrafthosting.gg/server-icon.png"
         volumeMounts:
         - name: server-data
           mountPath: /server

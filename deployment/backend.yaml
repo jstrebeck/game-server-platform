@@ -47,6 +47,41 @@ spec:
             secretKeyRef:
               name: watch2play-backend-secret
               key: AUTH0_MGMT_CLIENT_SECRET
+        # Stripe Configuration
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: STRIPE_SECRET_KEY
+        - name: STRIPE_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: STRIPE_WEBHOOK_SECRET
+        - name: STRIPE_PRICE_ID_2GB
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: STRIPE_PRICE_ID_2GB
+        - name: STRIPE_PRICE_ID_4GB
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: STRIPE_PRICE_ID_4GB
+        - name: STRIPE_PRICE_ID_6GB
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: STRIPE_PRICE_ID_6GB
+        - name: STRIPE_PRICE_ID_8GB
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: STRIPE_PRICE_ID_8GB
+        - name: STRIPE_SUCCESS_URL
+          value: "https://minecrafthosting.gg?payment=success"
+        - name: STRIPE_CANCEL_URL
+          value: "https://minecrafthosting.gg?payment=canceled"
 ---
 apiVersion: v1
 kind: Service

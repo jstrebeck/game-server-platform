@@ -7,3 +7,4 @@ websockets
 python-jose[cryptography]
 httpx
 python-multipart
+stripe>=7.0.0

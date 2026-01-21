@@ -8,18 +8,20 @@ from dotenv import load_dotenv
 import shutil
 import tempfile
 import zipfile
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Query, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config, watch
 from pydantic import BaseModel
 from typing import Optional
 
-from auth.dependencies import get_user_id, get_effective_user_id, require_admin, sanitize_user_id
+from auth.dependencies import get_user_id, get_effective_user_id, require_admin, sanitize_user_id, get_current_user
 from auth.websocket_auth import authenticate_websocket
 from auth import auth0_management
 from k8s.k8s_manager import K8sManager
 from k8s.velocity_manager import VelocityManager
 from models.game_models import GameServerResponse
+from billing.models import SubscriptionStatus, CheckoutResponse, PortalResponse, CheckoutRequest, AvailablePlansResponse, PlanInfo, PLANS, UpgradeResponse
+from billing import stripe_service, subscription, webhook_handler
 
 load_dotenv()
 
@@ -49,11 +51,21 @@ app.add_middleware(
 @app.post("/gameserver", response_model=GameServerResponse)
 def create_game_server(
     game: str = "minecraft",
-    memory: str = "2G",
     version: str = "LATEST",
-    user_id: str = Depends(get_effective_user_id)
+    user_id: str = Depends(get_effective_user_id),
+    current_user: dict = Depends(get_current_user)
 ):
     """Create a new game server for the authenticated user"""
+    # Start trial for new users who haven't started one yet
+    full_user_id = current_user.get("sub")
+    if not subscription.has_started_trial(full_user_id):
+        subscription.start_trial(full_user_id)
+        logger.info(f"Started 48-hour trial for new user {full_user_id}")
+
+    # Get the user's plan memory allocation
+    status = subscription.get_subscription_status(full_user_id)
+    memory = status.memory or "2G"
+    logger.info(f"Creating server for user {full_user_id} with {memory} RAM (plan: {status.plan_id})")
     # Load local kubeconfig or in-cluster credentials
     try:
         config.load_incluster_config()
@@ -124,6 +136,9 @@ echo "Paper Velocity config written"
         ],
     )
 
+    # Convert memory format for Kubernetes (e.g., "2G" -> "2Gi")
+    memory_limit = memory.replace("G", "Gi")
+
     container = client.V1Container(
         name=game,
         image="itzg/minecraft-server",
@@ -135,6 +150,8 @@ echo "Paper Velocity config written"
             # Velocity proxy configuration
             client.V1EnvVar(name="ONLINE_MODE", value="FALSE"),
             client.V1EnvVar(name="TYPE", value="PAPER"),
+            # Server icon
+            client.V1EnvVar(name="ICON", value="https://minecrafthosting.gg/server-icon.png"),
         ],
         volume_mounts=[
             client.V1VolumeMount(
@@ -142,6 +159,10 @@ echo "Paper Velocity config written"
                 mount_path="/data",
             )
         ],
+        resources=client.V1ResourceRequirements(
+            limits={"memory": memory_limit},
+            requests={"memory": memory_limit}
+        ),
     )
 
     template = client.V1PodTemplateSpec(
@@ -217,11 +238,57 @@ def stop_server(user_id: str = Depends(get_effective_user_id)):
 
 
 @app.post("/gameserver/start")
-def start_server(user_id: str = Depends(get_effective_user_id)):
-    """Start the game server for the authenticated user"""
+async def start_server(
+    user_id: str = Depends(get_effective_user_id),
+    current_user: dict = Depends(subscription.require_active_subscription)
+):
+    """Start the game server for the authenticated user. Requires active subscription or trial."""
     namespace = f"server-{user_id}"
+
+    # Get the user's plan memory allocation
+    full_user_id = current_user.get("sub")
+    status = subscription.get_subscription_status(full_user_id)
+    memory = status.memory or "2G"
+
+    # Update the deployment's memory allocation before starting
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    apps = client.AppsV1Api()
+
+    try:
+        # Patch the deployment to update memory
+        deployment = apps.read_namespaced_deployment(name="minecraft", namespace=namespace)
+
+        # Convert memory format for Kubernetes (e.g., "2G" -> "2Gi")
+        memory_limit = memory.replace("G", "Gi")
+
+        # Find and update the MEMORY env var and resource limits
+        for container in deployment.spec.template.spec.containers:
+            if container.name == "minecraft":
+                # Update MEMORY env var
+                if container.env:
+                    for env in container.env:
+                        if env.name == "MEMORY":
+                            env.value = memory
+                            break
+
+                # Update resource limits
+                if container.resources is None:
+                    container.resources = client.V1ResourceRequirements()
+                container.resources.limits = {"memory": memory_limit}
+                container.resources.requests = {"memory": memory_limit}
+
+        apps.patch_namespaced_deployment(name="minecraft", namespace=namespace, body=deployment)
+        logger.info(f"Updated memory to {memory} (limit: {memory_limit}) for user {user_id}")
+    except client.exceptions.ApiException as e:
+        logger.error(f"Failed to update memory: {e}")
+        # Continue anyway - server will start with previous memory setting
+
     k8s.scale_deployment(namespace, "minecraft", 1)
-    return {"status": "started"}
+    return {"status": "started", "memory": memory}
 
 
 @app.delete("/gameserver")
@@ -930,6 +997,335 @@ def admin_impersonate(
         email=target_user.get("email"),
         is_admin=False
     )
+
+
+# Cluster capacity configuration (in GB)
+CLUSTER_TOTAL_RAM_GB = int(os.getenv("CLUSTER_TOTAL_RAM_GB", "240"))
+
+
+def get_cluster_allocated_gb() -> float:
+    """Calculate total allocated RAM across all server namespaces. Returns GB."""
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+    apps = client.AppsV1Api()
+
+    namespaces = v1.list_namespace()
+    server_namespaces = [
+        ns.metadata.name for ns in namespaces.items
+        if ns.metadata.name.startswith("server-")
+    ]
+
+    total_allocated_bytes = 0
+    for ns in server_namespaces:
+        try:
+            deployments = apps.list_namespaced_deployment(namespace=ns)
+            for dep in deployments.items:
+                if dep.spec.replicas and dep.spec.replicas > 0:
+                    for container in dep.spec.template.spec.containers:
+                        if container.name == "minecraft" and container.resources and container.resources.limits:
+                            memory_limit = container.resources.limits.get("memory", "0")
+                            if memory_limit.endswith("Gi"):
+                                total_allocated_bytes += int(memory_limit[:-2]) * 1024 ** 3
+                            elif memory_limit.endswith("Mi"):
+                                total_allocated_bytes += int(memory_limit[:-2]) * 1024 ** 2
+        except client.exceptions.ApiException:
+            continue
+
+    return total_allocated_bytes / (1024 ** 3)
+
+
+def get_cluster_remaining_gb() -> float:
+    """Get remaining cluster capacity in GB."""
+    allocated = get_cluster_allocated_gb()
+    return CLUSTER_TOTAL_RAM_GB - allocated
+
+
+def parse_memory_to_gb(memory_str: str) -> int:
+    """Parse memory string like '2G', '4G' to integer GB value."""
+    if memory_str.endswith("G"):
+        return int(memory_str[:-1])
+    elif memory_str.endswith("Gi"):
+        return int(memory_str[:-2])
+    return 0
+
+
+class ClusterStatsResponse(BaseModel):
+    cluster_capacity_gb: int
+    total_allocated_gb: float
+    total_used_gb: float
+    remaining_gb: float
+    active_servers: int
+    usage_percent: float
+
+
+@app.get("/admin/cluster-stats", response_model=ClusterStatsResponse)
+def get_cluster_stats(admin_user: dict = Depends(require_admin)):
+    """Get cluster-wide RAM statistics. Requires admin role."""
+    import httpx
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+    apps = client.AppsV1Api()
+
+    # Get all namespaces starting with "server-"
+    namespaces = v1.list_namespace()
+    server_namespaces = [
+        ns.metadata.name for ns in namespaces.items
+        if ns.metadata.name.startswith("server-")
+    ]
+
+    total_allocated_bytes = 0
+    active_servers = 0
+
+    # Get allocated RAM from deployments in each namespace
+    for ns in server_namespaces:
+        try:
+            deployments = apps.list_namespaced_deployment(namespace=ns)
+            for dep in deployments.items:
+                if dep.spec.replicas and dep.spec.replicas > 0:
+                    active_servers += 1
+                    # Get memory limit from container spec
+                    for container in dep.spec.template.spec.containers:
+                        if container.name == "minecraft" and container.resources and container.resources.limits:
+                            memory_limit = container.resources.limits.get("memory", "0")
+                            # Parse memory string (e.g., "2Gi", "4Gi")
+                            if memory_limit.endswith("Gi"):
+                                total_allocated_bytes += int(memory_limit[:-2]) * 1024 ** 3
+                            elif memory_limit.endswith("Mi"):
+                                total_allocated_bytes += int(memory_limit[:-2]) * 1024 ** 2
+        except client.exceptions.ApiException:
+            continue
+
+    # Query Prometheus for actual used memory across all servers
+    total_used_bytes = 0
+    try:
+        query = 'sum(container_memory_working_set_bytes{container="minecraft"})'
+        with httpx.Client(timeout=5.0) as http_client:
+            response = http_client.get(
+                f"{PROMETHEUS_URL}/api/v1/query",
+                params={"query": query}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("status") == "success":
+                results = data.get("data", {}).get("result", [])
+                if results:
+                    value = results[0].get("value", [None, "0"])
+                    total_used_bytes = int(float(value[1])) if len(value) > 1 else 0
+    except Exception as e:
+        logger.warning(f"Failed to query Prometheus for cluster stats: {e}")
+
+    # Calculate stats
+    cluster_capacity_bytes = CLUSTER_TOTAL_RAM_GB * 1024 ** 3
+    total_allocated_gb = total_allocated_bytes / (1024 ** 3)
+    total_used_gb = total_used_bytes / (1024 ** 3)
+    remaining_gb = CLUSTER_TOTAL_RAM_GB - total_allocated_gb
+
+    usage_percent = (total_allocated_gb / CLUSTER_TOTAL_RAM_GB * 100) if CLUSTER_TOTAL_RAM_GB > 0 else 0
+
+    return ClusterStatsResponse(
+        cluster_capacity_gb=CLUSTER_TOTAL_RAM_GB,
+        total_allocated_gb=round(total_allocated_gb, 1),
+        total_used_gb=round(total_used_gb, 1),
+        remaining_gb=round(remaining_gb, 1),
+        active_servers=active_servers,
+        usage_percent=round(usage_percent, 1)
+    )
+
+
+# ===================================
+# Billing Endpoints
+# ===================================
+
+
+@app.get("/billing/status", response_model=SubscriptionStatus)
+def get_billing_status(current_user: dict = Depends(get_current_user)):
+    """Get the current subscription/trial status for the authenticated user."""
+    user_id = current_user.get("sub")
+    return subscription.get_subscription_status(user_id)
+
+
+@app.get("/billing/plans", response_model=AvailablePlansResponse)
+def get_available_plans():
+    """Get the list of available subscription plans."""
+    plans = [
+        PlanInfo(plan_id=plan_id, display_name=plan["display_name"], memory=plan["memory"])
+        for plan_id, plan in PLANS.items()
+    ]
+    return AvailablePlansResponse(plans=plans)
+
+
+@app.post("/billing/checkout", response_model=CheckoutResponse)
+def create_checkout(
+    request: CheckoutRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a Stripe Checkout session for subscription."""
+    user_id = current_user.get("sub")
+    email = current_user.get("email", "")
+    plan_id = request.plan_id
+
+    # Validate plan_id
+    if plan_id not in PLANS:
+        raise HTTPException(status_code=400, detail=f"Invalid plan_id: {plan_id}")
+
+    # Check cluster capacity
+    plan_memory = PLANS[plan_id]["memory"]
+    required_gb = parse_memory_to_gb(plan_memory)
+    remaining_gb = get_cluster_remaining_gb()
+
+    if remaining_gb < required_gb:
+        logger.warning(f"Checkout blocked for user {user_id}: insufficient capacity")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Sorry, we're currently at capacity. Please try again later."
+        )
+
+    # Get existing customer ID from metadata or create new customer
+    status = subscription.get_subscription_status(user_id)
+    customer_id = stripe_service.get_or_create_customer(
+        user_id,
+        email,
+        status.stripe_customer_id
+    )
+
+    # Update metadata with customer ID if new
+    if not status.stripe_customer_id:
+        auth0_management.update_user_metadata(user_id, {"stripe_customer_id": customer_id})
+
+    # Create checkout session with selected plan
+    result = stripe_service.create_checkout_session(customer_id, user_id, plan_id)
+
+    return CheckoutResponse(
+        checkout_url=result["checkout_url"],
+        session_id=result["session_id"]
+    )
+
+
+@app.post("/billing/portal", response_model=PortalResponse)
+def create_portal(current_user: dict = Depends(get_current_user)):
+    """Create a Stripe Customer Portal session for managing subscription."""
+    user_id = current_user.get("sub")
+
+    # Get customer ID from metadata
+    status = subscription.get_subscription_status(user_id)
+
+    if not status.stripe_customer_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No billing account found. Please subscribe first."
+        )
+
+    portal_url = stripe_service.create_portal_session(status.stripe_customer_id)
+
+    return PortalResponse(portal_url=portal_url)
+
+
+@app.post("/billing/upgrade", response_model=UpgradeResponse)
+def upgrade_plan(current_user: dict = Depends(get_current_user)):
+    """Upgrade subscription to the next RAM tier."""
+    user_id = current_user.get("sub")
+
+    # Get current subscription status
+    status = subscription.get_subscription_status(user_id)
+
+    if status.subscription_status != "active":
+        raise HTTPException(
+            status_code=400,
+            detail="You must have an active subscription to upgrade."
+        )
+
+    if not status.subscription_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No active subscription found."
+        )
+
+    current_plan = status.plan_id or "2gb"
+
+    # Get next plan tier
+    next_plan = stripe_service.get_next_plan(current_plan)
+
+    if not next_plan:
+        raise HTTPException(
+            status_code=400,
+            detail="You are already on the highest plan tier."
+        )
+
+    # Check cluster capacity for the additional RAM needed
+    current_memory_gb = parse_memory_to_gb(PLANS[current_plan]["memory"])
+    next_memory_gb = parse_memory_to_gb(PLANS[next_plan]["memory"])
+    additional_gb_needed = next_memory_gb - current_memory_gb
+    remaining_gb = get_cluster_remaining_gb()
+
+    if remaining_gb < additional_gb_needed:
+        logger.warning(f"Upgrade blocked for user {user_id}: insufficient capacity")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Sorry, we're currently at capacity. Please try again later."
+        )
+
+    # Upgrade the subscription in Stripe
+    try:
+        stripe_service.upgrade_subscription(status.subscription_id, next_plan, user_id)
+    except Exception as e:
+        logger.error(f"Failed to upgrade subscription: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to upgrade subscription. Please try again."
+        )
+
+    # Update user metadata with new plan
+    from auth import auth0_management
+    auth0_management.update_user_metadata(user_id, {"plan_id": next_plan})
+
+    new_memory = PLANS[next_plan]["memory"]
+
+    return UpgradeResponse(
+        success=True,
+        new_plan_id=next_plan,
+        new_memory=new_memory,
+        message=f"Successfully upgraded to {PLANS[next_plan]['display_name']}. Restart your server to apply the new RAM allocation."
+    )
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(
+    request: Request,
+    stripe_signature: str = Header(None, alias="Stripe-Signature")
+):
+    """
+    Handle Stripe webhook events.
+    This endpoint verifies the webhook signature and processes events.
+    """
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
+
+    # Get raw body for signature verification
+    payload = await request.body()
+
+    try:
+        event = stripe_service.construct_webhook_event(payload, stripe_signature)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except Exception as e:
+        logger.error(f"Webhook signature verification failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    # Process the event
+    result = webhook_handler.process_webhook_event(event)
+    logger.info(f"Webhook processed: {event.type} -> {result}")
+
+    return {"received": True, "result": result}
 
 
 executor = ThreadPoolExecutor(max_workers=5)

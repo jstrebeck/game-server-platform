@@ -149,3 +149,80 @@ def is_user_admin(user_id: str) -> bool:
     except Exception as e:
         logger.error(f"Error checking admin status for {user_id}: {e}")
         return False
+
+
+def get_user_metadata(user_id: str) -> dict:
+    """
+    Get the app_metadata for a user.
+
+    Args:
+        user_id: The Auth0 user ID (e.g., 'auth0|123456')
+
+    Returns:
+        Dict containing app_metadata, or empty dict if not found
+    """
+    token = get_management_token()
+
+    import urllib.parse
+    encoded_user_id = urllib.parse.quote(user_id, safe='')
+
+    url = f"https://{AUTH0_DOMAIN}/api/v2/users/{encoded_user_id}"
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                url,
+                params={"fields": "app_metadata"},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("app_metadata", {})
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            logger.warning(f"User {user_id} not found")
+            return {}
+        logger.error(f"Error getting metadata for {user_id}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Error getting metadata for {user_id}: {e}")
+        return {}
+
+
+def update_user_metadata(user_id: str, metadata: dict) -> bool:
+    """
+    Update the app_metadata for a user.
+
+    Args:
+        user_id: The Auth0 user ID (e.g., 'auth0|123456')
+        metadata: Dict of metadata fields to update (merged with existing)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    token = get_management_token()
+
+    import urllib.parse
+    encoded_user_id = urllib.parse.quote(user_id, safe='')
+
+    url = f"https://{AUTH0_DOMAIN}/api/v2/users/{encoded_user_id}"
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.patch(
+                url,
+                json={"app_metadata": metadata},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            response.raise_for_status()
+            logger.info(f"Updated metadata for user {user_id}")
+            return True
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Error updating metadata for {user_id}: {e.response.text}")
+        raise
+    except Exception as e:
+        logger.error(f"Error updating metadata for {user_id}: {e}")
+        return False

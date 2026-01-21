@@ -65,7 +65,7 @@ export default function Home() {
   const [wsConnected, setWsConnected] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [metrics, setMetrics] = useState<{ memory_bytes: number; memory_human: string } | null>(null)
-  const [activeTab, setActiveTab] = useState<'details' | 'monitoring' | 'operations' | 'plugins' | 'admin'>('details')
+  const [activeTab, setActiveTab] = useState<'details' | 'monitoring' | 'operations' | 'plugins' | 'billing' | 'admin'>('details')
   const [availablePlugins, setAvailablePlugins] = useState<any[]>([])
   const [installedPlugins, setInstalledPlugins] = useState<any[]>([])
   const [pluginLoading, setPluginLoading] = useState<string | null>(null)
@@ -82,6 +82,44 @@ export default function Home() {
   const [userSearchQuery, setUserSearchQuery] = useState('')
   const [usersLoading, setUsersLoading] = useState(false)
   const [usersTotal, setUsersTotal] = useState(0)
+
+  // Cluster stats state (admin only)
+  const [clusterStats, setClusterStats] = useState<{
+    cluster_capacity_gb: number
+    total_allocated_gb: number
+    total_used_gb: number
+    remaining_gb: number
+    active_servers: number
+    usage_percent: number
+  } | null>(null)
+  const [clusterStatsLoading, setClusterStatsLoading] = useState(false)
+
+  // Billing state
+  const [billingStatus, setBillingStatus] = useState<{
+    subscription_status: string
+    stripe_customer_id: string | null
+    subscription_id: string | null
+    trial_started_at: string | null
+    trial_ends_at: string | null
+    is_trial_expired: boolean
+    can_access_server: boolean
+    plan_id: string | null
+    memory: string | null
+  } | null>(null)
+  const [billingLoading, setBillingLoading] = useState(false)
+  const [showPaymentModal, setShowPaymentModal] = useState(false)
+  const [showCapacityModal, setShowCapacityModal] = useState(false)
+  const [paymentError, setPaymentError] = useState<string | null>(null)
+  const [upgradeSuccess, setUpgradeSuccess] = useState<string | null>(null)
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false)
+  const [selectedPlan, setSelectedPlan] = useState<string>('2gb')
+  const [availablePlans, setAvailablePlans] = useState<{ plan_id: string; display_name: string; memory: string; price: string }[]>([
+    { plan_id: '2gb', display_name: '2 GB RAM', memory: '2G', price: '$4.99' },
+    { plan_id: '4gb', display_name: '4 GB RAM', memory: '4G', price: '$9.99' },
+    { plan_id: '6gb', display_name: '6 GB RAM', memory: '6G', price: '$14.99' },
+    { plan_id: '8gb', display_name: '8 GB RAM', memory: '8G', price: '$19.99' },
+  ])
+
   const wsRef = useRef<WebSocket | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -93,12 +131,37 @@ export default function Home() {
     }
   }, [logs, showLogs])
 
+  // Handle payment query params on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const paymentStatus = params.get('payment')
+
+    if (paymentStatus === 'success') {
+      // Remove query param from URL without reload
+      window.history.replaceState({}, '', window.location.pathname)
+      // Refresh billing status after successful payment
+      setTimeout(() => {
+        fetchBillingStatus()
+      }, 1000)
+    } else if (paymentStatus === 'canceled') {
+      // Remove query param from URL without reload
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
+
   // Default to admin tab for admins without a server
   useEffect(() => {
     if (isAdmin(user) && serverExists === false && !result) {
       setActiveTab('admin')
     }
   }, [user, serverExists, result])
+
+  // Fetch cluster stats when admin tab is active
+  useEffect(() => {
+    if (isAdmin(user) && activeTab === 'admin' && !clusterStats && !clusterStatsLoading) {
+      fetchClusterStats()
+    }
+  }, [user, activeTab])
 
   // Cleanup WebSocket and metrics interval on unmount
   useEffect(() => {
@@ -112,13 +175,29 @@ export default function Home() {
     }
   }, [])
 
-  // Auto-check for existing server when user is authenticated or impersonation changes
+  // Fetch billing status
+  async function fetchBillingStatus() {
+    try {
+      const res = await fetchWithAuth(`${API_URL}/billing/status`)
+      if (res.ok) {
+        const data = await res.json()
+        setBillingStatus(data)
+      }
+    } catch (err) {
+      console.error('Error fetching billing status:', err)
+    }
+  }
+
+  // Auto-check for existing server and billing status when user is authenticated or impersonation changes
   useEffect(() => {
     async function checkExistingServer() {
       if (!user || authLoading) return
 
       const token = await getAccessToken()
       if (!token) return
+
+      // Fetch billing status
+      fetchBillingStatus()
 
       try {
         const headers: Record<string, string> = {
@@ -429,6 +508,34 @@ export default function Home() {
     }
   }
 
+  async function fetchClusterStats() {
+    if (!isAdmin(user)) return
+
+    setClusterStatsLoading(true)
+    try {
+      const token = await getAccessToken()
+      if (!token) return
+
+      const res = await fetch(`${API_URL}/admin/cluster-stats`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+        },
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setClusterStats(data)
+      } else {
+        console.error('Failed to fetch cluster stats:', res.status)
+      }
+    } catch (err) {
+      console.error('Error fetching cluster stats:', err)
+    } finally {
+      setClusterStatsLoading(false)
+    }
+  }
+
   async function startImpersonation(targetUserId: string) {
     if (!isAdmin(user)) return
 
@@ -599,6 +706,102 @@ export default function Home() {
     }
   }
 
+  async function handleSubscribe(planId: string = selectedPlan) {
+    setBillingLoading(true)
+    setPaymentError(null)
+    try {
+      const res = await fetchWithAuth(`${API_URL}/billing/checkout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ plan_id: planId }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        // Redirect to Stripe Checkout
+        window.location.href = data.checkout_url
+      } else if (res.status === 503) {
+        // Cluster at capacity
+        setShowCapacityModal(true)
+      } else {
+        const data = await res.json()
+        setPaymentError(data.detail || 'Failed to create checkout session')
+      }
+    } catch (err) {
+      console.error('Error creating checkout:', err)
+      setPaymentError('Failed to create checkout session. Please try again.')
+    } finally {
+      setBillingLoading(false)
+    }
+  }
+
+  async function handleManageSubscription() {
+    setBillingLoading(true)
+    try {
+      const res = await fetchWithAuth(`${API_URL}/billing/portal`, {
+        method: 'POST',
+      })
+      if (res.ok) {
+        const data = await res.json()
+        // Open portal in new tab
+        window.open(data.portal_url, '_blank')
+      } else {
+        const data = await res.json()
+        setError(data.detail || 'Failed to open billing portal')
+      }
+    } catch (err) {
+      console.error('Error opening portal:', err)
+      setError('Failed to open billing portal. Please try again.')
+    } finally {
+      setBillingLoading(false)
+    }
+  }
+
+  function getNextPlan(currentPlanId: string | null) {
+    const planOrder = ['2gb', '4gb', '6gb', '8gb']
+    const currentIndex = planOrder.indexOf(currentPlanId || '2gb')
+    if (currentIndex >= 0 && currentIndex < planOrder.length - 1) {
+      const nextPlanId = planOrder[currentIndex + 1]
+      return availablePlans.find(p => p.plan_id === nextPlanId) || null
+    }
+    return null
+  }
+
+  function getCurrentPlan(currentPlanId: string | null) {
+    return availablePlans.find(p => p.plan_id === (currentPlanId || '2gb')) || null
+  }
+
+  async function handleUpgrade() {
+    setBillingLoading(true)
+    setPaymentError(null)
+    setUpgradeSuccess(null)
+    try {
+      const res = await fetchWithAuth(`${API_URL}/billing/upgrade`, {
+        method: 'POST',
+      })
+      if (res.ok) {
+        const data = await res.json()
+        // Refresh billing status to show new plan
+        await fetchBillingStatus()
+        // Show success message temporarily
+        setUpgradeSuccess(data.message)
+        setTimeout(() => setUpgradeSuccess(null), 5000)
+      } else if (res.status === 503) {
+        // Cluster at capacity
+        setShowCapacityModal(true)
+      } else {
+        const data = await res.json()
+        setPaymentError(data.detail || 'Failed to upgrade subscription')
+      }
+    } catch (err) {
+      console.error('Error upgrading:', err)
+      setPaymentError('Failed to upgrade subscription. Please try again.')
+    } finally {
+      setBillingLoading(false)
+    }
+  }
+
   async function startServer() {
     setLoading(true)
     setError(null)
@@ -609,7 +812,16 @@ export default function Home() {
       })
 
       if (!res.ok) {
-        setError(`Failed to start server (Error ${res.status})`)
+        if (res.status === 402) {
+          // Payment required - show payment modal
+          const data = await res.json()
+          setPaymentError(data.detail?.message || 'Subscription required to start server')
+          setShowPaymentModal(true)
+          // Refresh billing status
+          fetchBillingStatus()
+        } else {
+          setError(`Failed to start server (Error ${res.status})`)
+        }
         return
       }
 
@@ -696,7 +908,7 @@ export default function Home() {
 
     try {
       const res = await fetchWithAuth(
-        `${API_URL}/gameserver?game=minecraft&memory=2G&version=${selectedVersion}`,
+        `${API_URL}/gameserver?game=minecraft&version=${selectedVersion}`,
         { method: 'POST' }
       )
 
@@ -756,6 +968,7 @@ export default function Home() {
         {/* Hero Section */}
         <div className="flex flex-col items-center justify-center min-h-screen p-4">
           <div className="text-center max-w-4xl mx-auto">
+            <img src="/logo.svg" alt="Minecraft Hosting" className="h-24 md:h-32 mx-auto mb-4" />
             <h1 className="text-5xl md:text-6xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-4">
               Minecraft Hosting
             </h1>
@@ -909,6 +1122,7 @@ export default function Home() {
       <div className={`w-full max-w-2xl ${impersonating ? 'pt-12' : ''}`}>
         {/* Header with user info */}
         <div className="text-center mb-8">
+          <img src="/logo.svg" alt="Minecraft Hosting" className="h-16 mx-auto mb-2" />
           <h1 className="text-4xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-2">
             Minecraft Hosting
           </h1>
@@ -929,6 +1143,47 @@ export default function Home() {
 
         {/* Main Card */}
         <div className="bg-slate-900/80 backdrop-blur-sm rounded-2xl shadow-2xl border border-slate-800 overflow-hidden">
+          {/* Subscription Banner */}
+          {billingStatus && !billingStatus.can_access_server && serverExists && (
+            <div className="bg-gradient-to-r from-amber-600/20 to-orange-600/20 border-b border-amber-500/30 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <p className="text-amber-200 text-sm">
+                    {billingStatus.is_trial_expired
+                      ? 'Your trial has expired. Subscribe to continue using your server.'
+                      : billingStatus.subscription_status === 'past_due'
+                      ? 'Payment failed. Please update your payment method.'
+                      : 'Subscription required to start your server.'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleSubscribe(selectedPlan)}
+                  disabled={billingLoading}
+                  className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg text-black text-sm font-semibold transition-colors whitespace-nowrap"
+                >
+                  {billingLoading ? 'Loading...' : 'Subscribe Now'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Trial Countdown Banner */}
+          {billingStatus && billingStatus.subscription_status === 'trialing' && !billingStatus.is_trial_expired && billingStatus.trial_ends_at && (
+            <div className="bg-gradient-to-r from-blue-600/20 to-indigo-600/20 border-b border-blue-500/30 p-3">
+              <div className="flex items-center justify-center gap-2">
+                <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-blue-200 text-sm">
+                  Free trial ends: <span className="font-medium">{new Date(billingStatus.trial_ends_at).toLocaleString()}</span>
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Server Actions Section */}
           <div className="p-6 space-y-4">
             <div className="flex justify-center">
@@ -1096,6 +1351,19 @@ export default function Home() {
                     </button>
                   </>
                 )}
+                <button
+                  onClick={() => setActiveTab('billing')}
+                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                    activeTab === 'billing'
+                      ? 'text-emerald-400'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Billing
+                  {activeTab === 'billing' && (
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-400" />
+                  )}
+                </button>
                 {isAdmin(user) && (
                   <button
                     onClick={() => setActiveTab('admin')}
@@ -1155,12 +1423,59 @@ export default function Home() {
                 <div className="space-y-4 mb-4">
                   {/* RAM Usage */}
                   {result.status === 'ready' && (
-                    <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
-                      <span className="text-slate-400 text-sm">RAM Usage</span>
-                      <span className="font-mono text-sm text-cyan-400">
-                        {metrics ? metrics.memory_human : 'Loading...'}
-                      </span>
-                    </div>
+                    (() => {
+                      // Parse plan memory (e.g., "4G" -> 4 * 1024^3 bytes)
+                      const planMemoryStr = billingStatus?.memory || '2G'
+                      const planMemoryGB = parseInt(planMemoryStr.replace('G', '')) || 2
+                      const planMemoryBytes = planMemoryGB * 1024 * 1024 * 1024
+
+                      // Calculate usage percentage
+                      const usedBytes = metrics?.memory_bytes || 0
+                      const usedGB = usedBytes / (1024 * 1024 * 1024)
+                      const usagePercent = Math.min((usedBytes / planMemoryBytes) * 100, 100)
+
+                      // Determine color based on usage
+                      const getBarColor = () => {
+                        if (usagePercent >= 90) return 'from-red-500 to-rose-500'
+                        if (usagePercent >= 70) return 'from-amber-500 to-yellow-500'
+                        return 'from-cyan-500 to-blue-500'
+                      }
+
+                      const getTextColor = () => {
+                        if (usagePercent >= 90) return 'text-red-400'
+                        if (usagePercent >= 70) return 'text-amber-400'
+                        return 'text-cyan-400'
+                      }
+
+                      return (
+                        <div className="p-4 bg-slate-800/50 rounded-lg space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-300 font-medium">RAM Usage</span>
+                            <span className={`font-mono text-sm font-semibold ${getTextColor()}`}>
+                              {metrics ? `${usedGB.toFixed(1)} GB / ${planMemoryGB} GB` : 'Loading...'}
+                            </span>
+                          </div>
+
+                          {/* Progress Bar */}
+                          <div className="relative">
+                            <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full bg-gradient-to-r ${getBarColor()} transition-all duration-500 ease-out`}
+                                style={{ width: `${metrics ? usagePercent : 0}%` }}
+                              />
+                            </div>
+                            {/* Percentage label */}
+                            <div className="flex justify-between mt-1">
+                              <span className="text-xs text-slate-500">0 GB</span>
+                              <span className={`text-xs font-medium ${getTextColor()}`}>
+                                {metrics ? `${usagePercent.toFixed(0)}%` : '—'}
+                              </span>
+                              <span className="text-xs text-slate-500">{planMemoryGB} GB</span>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })()
                   )}
 
                   {/* Start/Stop Buttons */}
@@ -1408,6 +1723,221 @@ export default function Home() {
                 </div>
               )}
 
+              {/* Billing Tab */}
+              {activeTab === 'billing' && (
+                <div className="space-y-4 mb-4">
+                  {/* Current Plan Status */}
+                  <div className="p-4 bg-slate-800/50 rounded-lg">
+                    <div className="flex items-center gap-2 mb-3">
+                      <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                      </svg>
+                      <span className="text-white font-medium">Subscription Status</span>
+                    </div>
+
+                    {billingStatus ? (
+                      <div className="space-y-3">
+                        {/* Status Badge and Current Plan */}
+                        <div className="flex items-center justify-between">
+                          <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                            billingStatus.subscription_status === 'active'
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                              : billingStatus.subscription_status === 'trialing'
+                              ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                              : billingStatus.subscription_status === 'past_due'
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                              : billingStatus.subscription_status === 'canceled'
+                              ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                              : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+                          }`}>
+                            {billingStatus.subscription_status === 'active' && 'Active Subscription'}
+                            {billingStatus.subscription_status === 'trialing' && 'Free Trial'}
+                            {billingStatus.subscription_status === 'past_due' && 'Payment Due'}
+                            {billingStatus.subscription_status === 'canceled' && 'Canceled'}
+                            {billingStatus.subscription_status === 'none' && 'No Subscription'}
+                          </span>
+                          {billingStatus.memory && (
+                            <span className="px-3 py-1 rounded-full text-sm font-medium bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                              {billingStatus.memory} RAM
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Trial Countdown */}
+                        {billingStatus.subscription_status === 'trialing' && billingStatus.trial_ends_at && (
+                          <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                            <p className="text-blue-200 text-sm">
+                              Your 48-hour trial {billingStatus.is_trial_expired ? 'has ended' : 'ends'} on{' '}
+                              <span className="font-medium">
+                                {new Date(billingStatus.trial_ends_at).toLocaleString()}
+                              </span>
+                            </p>
+                            {!billingStatus.is_trial_expired && (
+                              <p className="text-blue-300 text-xs mt-1">
+                                Subscribe now to continue using your server after the trial.
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Trial Expired Warning */}
+                        {billingStatus.is_trial_expired && billingStatus.subscription_status !== 'active' && (
+                          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                            <p className="text-red-200 text-sm font-medium">
+                              Your trial has expired. Subscribe to continue using your server.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Upgrade Success Message */}
+                        {upgradeSuccess && (
+                          <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-start gap-2">
+                            <svg className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                            <p className="text-emerald-200 text-sm">{upgradeSuccess}</p>
+                          </div>
+                        )}
+
+                        {/* Past Due Warning */}
+                        {billingStatus.subscription_status === 'past_due' && (
+                          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                            <p className="text-amber-200 text-sm">
+                              Your payment has failed. Please update your payment method to avoid service interruption.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Plan Selection for new subscribers */}
+                        {(billingStatus.subscription_status === 'none' ||
+                          billingStatus.subscription_status === 'trialing' ||
+                          billingStatus.subscription_status === 'canceled' ||
+                          billingStatus.is_trial_expired) && (
+                          <div className="mt-4">
+                            <label className="text-slate-300 text-sm font-medium block mb-2">Select a Plan</label>
+                            <div className="grid grid-cols-2 gap-2">
+                              {availablePlans.map((plan) => (
+                                <button
+                                  key={plan.plan_id}
+                                  onClick={() => setSelectedPlan(plan.plan_id)}
+                                  className={`p-3 rounded-lg border text-left transition-all ${
+                                    selectedPlan === plan.plan_id
+                                      ? 'border-emerald-500 bg-emerald-500/10'
+                                      : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
+                                  }`}
+                                >
+                                  <span className={`font-semibold block ${
+                                    selectedPlan === plan.plan_id ? 'text-emerald-400' : 'text-white'
+                                  }`}>
+                                    {plan.display_name}
+                                  </span>
+                                  <span className={`text-sm ${
+                                    selectedPlan === plan.plan_id ? 'text-emerald-400/70' : 'text-slate-400'
+                                  }`}>
+                                    {plan.price}/mo
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Action Buttons */}
+                        <div className="flex gap-3 mt-4">
+                          {(billingStatus.subscription_status === 'none' ||
+                            billingStatus.subscription_status === 'trialing' ||
+                            billingStatus.subscription_status === 'canceled' ||
+                            billingStatus.is_trial_expired) && (
+                            <button
+                              onClick={() => handleSubscribe(selectedPlan)}
+                              disabled={billingLoading}
+                              className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
+                            >
+                              {billingLoading ? (
+                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                              ) : (
+                                <>
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                                  </svg>
+                                  Subscribe to {availablePlans.find(p => p.plan_id === selectedPlan)?.display_name}
+                                </>
+                              )}
+                            </button>
+                          )}
+
+                          {(billingStatus.subscription_status === 'active' ||
+                            billingStatus.subscription_status === 'past_due') && (
+                            <button
+                              onClick={handleManageSubscription}
+                              disabled={billingLoading}
+                              className="flex-1 py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed font-semibold shadow-lg transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none border border-slate-600 flex items-center justify-center gap-2"
+                            >
+                              {billingLoading ? (
+                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                              ) : (
+                                <>
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  </svg>
+                                  Manage Subscription
+                                </>
+                              )}
+                            </button>
+                          )}
+
+                          {/* Upgrade Button - only show for active subscriptions with upgrade available */}
+                          {billingStatus.subscription_status === 'active' && getNextPlan(billingStatus.plan_id) && (
+                            <button
+                              onClick={() => setShowUpgradeModal(true)}
+                              disabled={billingLoading}
+                              className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
+                            >
+                              {billingLoading ? (
+                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                              ) : (
+                                <>
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                                  </svg>
+                                  Upgrade to {getNextPlan(billingStatus.plan_id)?.display_name} ({getNextPlan(billingStatus.plan_id)?.price}/mo)
+                                </>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-4">
+                        <svg className="animate-spin h-6 w-6 text-slate-400 mx-auto mb-2" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        <p className="text-slate-400">Loading billing status...</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Payment Info */}
+                  <div className="p-4 bg-slate-800/30 rounded-lg border border-slate-700">
+                    <p className="text-slate-400 text-sm">
+                      Payments are processed securely by Stripe. You can upgrade, downgrade, or cancel your subscription at any time
+                      from the Manage Subscription page.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Admin Tab */}
               {activeTab === 'admin' && isAdmin(user) && (
                 <div className="space-y-4 mb-4">
@@ -1416,6 +1946,87 @@ export default function Home() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                     </svg>
                     <span className="text-amber-400 font-medium">Admin Panel</span>
+                  </div>
+
+                  {/* Cluster RAM Stats */}
+                  <div className="p-4 bg-slate-800/50 rounded-lg">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-white font-medium">Cluster Resources</h4>
+                      <button
+                        onClick={fetchClusterStats}
+                        disabled={clusterStatsLoading}
+                        className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 rounded text-slate-300 transition-colors"
+                      >
+                        {clusterStatsLoading ? 'Loading...' : 'Refresh'}
+                      </button>
+                    </div>
+                    {clusterStats ? (
+                      <div className="space-y-3">
+                        {/* RAM Progress Bar */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="text-slate-400">RAM Allocated</span>
+                            <span className="text-white">{clusterStats.total_allocated_gb} GB / {clusterStats.cluster_capacity_gb} GB</span>
+                          </div>
+                          <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-500 ${
+                                clusterStats.usage_percent >= 90
+                                  ? 'bg-rose-500'
+                                  : clusterStats.usage_percent >= 70
+                                  ? 'bg-amber-500'
+                                  : 'bg-emerald-500'
+                              }`}
+                              style={{ width: `${Math.min(clusterStats.usage_percent, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Stats Grid */}
+                        <div className="grid grid-cols-2 gap-3 pt-2">
+                          <div className="p-3 bg-slate-900/50 rounded-lg">
+                            <p className="text-slate-400 text-xs mb-1">Remaining Capacity</p>
+                            <p className={`text-lg font-semibold ${
+                              clusterStats.remaining_gb <= 8 ? 'text-rose-400' : 'text-emerald-400'
+                            }`}>
+                              {clusterStats.remaining_gb} GB
+                            </p>
+                          </div>
+                          <div className="p-3 bg-slate-900/50 rounded-lg">
+                            <p className="text-slate-400 text-xs mb-1">Active Servers</p>
+                            <p className="text-lg font-semibold text-cyan-400">{clusterStats.active_servers}</p>
+                          </div>
+                          <div className="p-3 bg-slate-900/50 rounded-lg">
+                            <p className="text-slate-400 text-xs mb-1">Currently Used</p>
+                            <p className="text-lg font-semibold text-slate-300">{clusterStats.total_used_gb} GB</p>
+                          </div>
+                          <div className="p-3 bg-slate-900/50 rounded-lg">
+                            <p className="text-slate-400 text-xs mb-1">Usage</p>
+                            <p className={`text-lg font-semibold ${
+                              clusterStats.usage_percent >= 90
+                                ? 'text-rose-400'
+                                : clusterStats.usage_percent >= 70
+                                ? 'text-amber-400'
+                                : 'text-emerald-400'
+                            }`}>
+                              {clusterStats.usage_percent}%
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ) : clusterStatsLoading ? (
+                      <div className="flex items-center justify-center py-4">
+                        <svg className="animate-spin h-5 w-5 text-slate-400 mr-2" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        <span className="text-slate-400 text-sm">Loading cluster stats...</span>
+                      </div>
+                    ) : (
+                      <p className="text-slate-500 text-sm text-center py-2">
+                        Failed to load cluster stats
+                      </p>
+                    )}
                   </div>
 
                   {/* Current Impersonation Status */}
@@ -1536,6 +2147,208 @@ export default function Home() {
             </div>
           )}
 
+          {/* Payment Required Modal */}
+          {showPaymentModal && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-slate-900 rounded-2xl shadow-2xl border border-slate-700 max-w-md w-full p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-12 h-12 bg-amber-500/20 rounded-xl flex items-center justify-center">
+                    <svg className="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-white">Subscription Required</h3>
+                    <p className="text-slate-400 text-sm">Your trial has expired</p>
+                  </div>
+                </div>
+
+                <p className="text-slate-300 mb-4">
+                  {paymentError || 'Your 48-hour trial has ended. Subscribe now to continue using your Minecraft server.'}
+                </p>
+
+                {/* Plan Selection */}
+                <div className="mb-4">
+                  <label className="text-slate-300 text-sm font-medium block mb-2">Select a Plan</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {availablePlans.map((plan) => (
+                      <button
+                        key={plan.plan_id}
+                        onClick={() => setSelectedPlan(plan.plan_id)}
+                        className={`p-3 rounded-lg border text-left transition-all ${
+                          selectedPlan === plan.plan_id
+                            ? 'border-emerald-500 bg-emerald-500/10'
+                            : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
+                        }`}
+                      >
+                        <span className={`font-semibold block ${
+                          selectedPlan === plan.plan_id ? 'text-emerald-400' : 'text-white'
+                        }`}>
+                          {plan.display_name}
+                        </span>
+                        <span className={`text-sm ${
+                          selectedPlan === plan.plan_id ? 'text-emerald-400/70' : 'text-slate-400'
+                        }`}>
+                          {plan.price}/mo
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <button
+                    onClick={() => {
+                      setShowPaymentModal(false)
+                      handleSubscribe(selectedPlan)
+                    }}
+                    disabled={billingLoading}
+                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
+                  >
+                    {billingLoading ? (
+                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                        </svg>
+                        Subscribe to {availablePlans.find(p => p.plan_id === selectedPlan)?.display_name}
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setShowPaymentModal(false)
+                      setPaymentError(null)
+                    }}
+                    className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Capacity Limit Modal */}
+          {showCapacityModal && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-slate-900 rounded-2xl shadow-2xl border border-slate-700 max-w-md w-full p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-12 h-12 bg-rose-500/20 rounded-xl flex items-center justify-center">
+                    <svg className="w-6 h-6 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-white">We're at Capacity</h3>
+                    <p className="text-slate-400 text-sm">High demand right now</p>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl mb-4">
+                  <p className="text-rose-200 text-sm">
+                    Our servers are currently running at full capacity. We're working hard to add more resources.
+                  </p>
+                </div>
+
+                <p className="text-slate-300 mb-6">
+                  Please try again later. We appreciate your patience and apologize for any inconvenience.
+                </p>
+
+                <button
+                  onClick={() => setShowCapacityModal(false)}
+                  className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium transition-colors"
+                >
+                  Got it
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Upgrade Confirmation Modal */}
+          {showUpgradeModal && billingStatus && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-slate-900 rounded-2xl shadow-2xl border border-slate-700 max-w-md w-full p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center">
+                    <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-white">Confirm Upgrade</h3>
+                    <p className="text-slate-400 text-sm">Upgrade your server RAM</p>
+                  </div>
+                </div>
+
+                {/* Plan Comparison */}
+                <div className="flex items-center gap-3 mb-6">
+                  {/* Current Plan */}
+                  <div className="flex-1 p-4 bg-slate-800/50 rounded-xl border border-slate-700">
+                    <p className="text-slate-400 text-xs uppercase tracking-wide mb-1">Current Plan</p>
+                    <p className="text-white font-semibold text-lg">{getCurrentPlan(billingStatus.plan_id)?.display_name}</p>
+                    <p className="text-slate-400 text-sm">{getCurrentPlan(billingStatus.plan_id)?.price}/mo</p>
+                  </div>
+
+                  {/* Arrow */}
+                  <div className="flex-shrink-0">
+                    <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                    </svg>
+                  </div>
+
+                  {/* New Plan */}
+                  <div className="flex-1 p-4 bg-indigo-500/10 rounded-xl border border-indigo-500/30">
+                    <p className="text-indigo-400 text-xs uppercase tracking-wide mb-1">New Plan</p>
+                    <p className="text-white font-semibold text-lg">{getNextPlan(billingStatus.plan_id)?.display_name}</p>
+                    <p className="text-indigo-400 text-sm">{getNextPlan(billingStatus.plan_id)?.price}/mo</p>
+                  </div>
+                </div>
+
+                <p className="text-slate-400 text-sm mb-6">
+                  You will be charged the prorated difference for the remainder of your billing period. Restart your server after upgrading to apply the new RAM allocation.
+                </p>
+
+                <div className="space-y-3">
+                  <button
+                    onClick={() => {
+                      setShowUpgradeModal(false)
+                      handleUpgrade()
+                    }}
+                    disabled={billingLoading}
+                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
+                  >
+                    {billingLoading ? (
+                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        Confirm Upgrade
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => setShowUpgradeModal(false)}
+                    className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Logs Section */}
           {showLogs && (
             <div className="border-t border-slate-800 bg-slate-950/50 p-6">
@@ -1548,10 +2361,21 @@ export default function Home() {
                       <span className="text-xs font-medium">Live</span>
                     </span>
                   ) : (
-                    <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/20 text-red-400 border border-red-500/30">
-                      <span className="w-2 h-2 bg-red-400 rounded-full"></span>
-                      <span className="text-xs font-medium">Disconnected</span>
-                    </span>
+                    <>
+                      <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/20 text-red-400 border border-red-500/30">
+                        <span className="w-2 h-2 bg-red-400 rounded-full"></span>
+                        <span className="text-xs font-medium">Disconnected</span>
+                      </span>
+                      <button
+                        onClick={fetchPodsAndConnect}
+                        className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors flex items-center gap-1.5"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Retry
+                      </button>
+                    </>
                   )}
                 </div>
                 <button
