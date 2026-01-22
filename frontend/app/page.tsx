@@ -76,6 +76,13 @@ export default function Home() {
   const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Console state
+  const [consoleCommand, setConsoleCommand] = useState('')
+  const [consoleLoading, setConsoleLoading] = useState(false)
+  const [consoleOutput, setConsoleOutput] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [commandHistory, setCommandHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+
   // Admin impersonation state
   const [impersonating, setImpersonating] = useState<{ userId: string; sanitizedId: string; email: string | null } | null>(null)
   const [adminUsers, setAdminUsers] = useState<any[]>([])
@@ -408,6 +415,69 @@ export default function Home() {
       setOpLoading(false)
       // Clear message after 5 seconds
       setTimeout(() => setOpMessage(null), 5000)
+    }
+  }
+
+  async function executeConsoleCommand() {
+    const command = consoleCommand.trim()
+    if (!command) return
+
+    setConsoleLoading(true)
+    setConsoleOutput(null)
+
+    try {
+      const res = await fetchWithAuth(`${API_URL}/gameserver/console`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ command }),
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        setConsoleOutput({ type: 'success', text: data.output || 'Command executed' })
+        // Add to history (avoid duplicates at the end)
+        setCommandHistory(prev => {
+          const newHistory = prev.filter(cmd => cmd !== command)
+          return [...newHistory, command].slice(-50) // Keep last 50 commands
+        })
+        setConsoleCommand('')
+        setHistoryIndex(-1)
+      } else {
+        setConsoleOutput({ type: 'error', text: data.detail || 'Failed to execute command' })
+      }
+    } catch (err) {
+      console.error('Failed to execute console command:', err)
+      setConsoleOutput({ type: 'error', text: 'Failed to execute command' })
+    } finally {
+      setConsoleLoading(false)
+    }
+  }
+
+  function handleConsoleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') {
+      executeConsoleCommand()
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (commandHistory.length > 0) {
+        const newIndex = historyIndex === -1 ? commandHistory.length - 1 : Math.max(0, historyIndex - 1)
+        setHistoryIndex(newIndex)
+        setConsoleCommand(commandHistory[newIndex])
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (historyIndex !== -1) {
+        const newIndex = historyIndex + 1
+        if (newIndex >= commandHistory.length) {
+          setHistoryIndex(-1)
+          setConsoleCommand('')
+        } else {
+          setHistoryIndex(newIndex)
+          setConsoleCommand(commandHistory[newIndex])
+        }
+      }
     }
   }
 
@@ -1583,6 +1653,59 @@ export default function Home() {
                           {opMessage}
                         </p>
                       )}
+                    </div>
+                  )}
+
+                  {/* Console - only when server is running */}
+                  {result.status === 'ready' && (
+                    <div className="p-4 bg-slate-800/50 rounded-lg">
+                      <div className="flex items-center gap-2 mb-3">
+                        <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <span className="text-white font-medium">Server Console</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <div className="flex-1 relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-mono">/</span>
+                          <input
+                            type="text"
+                            value={consoleCommand}
+                            onChange={(e) => setConsoleCommand(e.target.value)}
+                            onKeyDown={handleConsoleKeyDown}
+                            placeholder="say Hello World"
+                            className="w-full pl-7 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 font-mono text-sm focus:outline-none focus:border-green-500"
+                            disabled={consoleLoading}
+                          />
+                        </div>
+                        <button
+                          onClick={executeConsoleCommand}
+                          disabled={consoleLoading || !consoleCommand.trim()}
+                          className="px-4 py-2 bg-green-600 hover:bg-green-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                        >
+                          {consoleLoading ? (
+                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                            </svg>
+                          )}
+                          Send
+                        </button>
+                      </div>
+                      {consoleOutput && (
+                        <div className={`mt-3 p-2 rounded-lg font-mono text-sm ${
+                          consoleOutput.type === 'success' ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'
+                        }`}>
+                          {consoleOutput.text}
+                        </div>
+                      )}
+                      <p className="mt-2 text-xs text-slate-500">
+                        Press Enter to send. Use Arrow Up/Down for command history.
+                      </p>
                     </div>
                   )}
 
