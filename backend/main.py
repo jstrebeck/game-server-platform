@@ -571,6 +571,98 @@ def op_player(player_name: str, user_id: str = Depends(get_effective_user_id)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ConsoleCommand(BaseModel):
+    command: str
+
+
+# Blocked commands that should use UI controls instead
+BLOCKED_CONSOLE_COMMANDS = {'stop', 'shutdown', 'restart', 'end', 'quit'}
+
+
+@app.post("/gameserver/console")
+def execute_console_command(
+    body: ConsoleCommand,
+    user_id: str = Depends(get_effective_user_id),
+    current_user: dict = Depends(get_current_user)
+):
+    """Execute a console command on the user's Minecraft server via RCON"""
+    from kubernetes.stream import stream
+
+    command = body.command.strip()
+
+    # Validate command
+    if not command:
+        raise HTTPException(status_code=400, detail="Command cannot be empty")
+    if len(command) > 500:
+        raise HTTPException(status_code=400, detail="Command too long (max 500 characters)")
+
+    # Check for blocked commands
+    first_word = command.split()[0].lower()
+    if first_word in BLOCKED_CONSOLE_COMMANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The '{first_word}' command is blocked. Please use the UI controls to stop/restart your server."
+        )
+
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    try:
+        # Find the minecraft pod
+        pods = v1.list_namespaced_pod(namespace=namespace, label_selector="app=minecraft")
+        if not pods.items:
+            raise HTTPException(status_code=404, detail="No minecraft pod found")
+
+        pod = pods.items[0]
+        pod_name = pod.metadata.name
+
+        # Check if pod is running
+        if pod.status.phase != "Running":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Server is not running (status: {pod.status.phase})"
+            )
+
+        # Execute via rcon-cli
+        exec_command = ['rcon-cli', command]
+        result = stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=exec_command,
+            container='minecraft',
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False
+        )
+
+        # Log the command for audit
+        logger.info(f"Console command by user {current_user.get('sub')}: '{command}' -> {result}")
+
+        return {
+            "status": "success",
+            "command": command,
+            "output": result.strip() if result else "Command executed (no output)"
+        }
+
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to execute console command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/gameserver/plugins/available")
 def get_available_plugins():
     """Get list of available plugins that can be installed"""
