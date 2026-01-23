@@ -997,11 +997,29 @@ async def upload_world(file: UploadFile = File(...), user_id: str = Depends(get_
                 _preload_content=False
             )
 
-            # Send tar data
-            resp.write_stdin(tar_data)
+            # Send tar data in chunks to avoid connection reset on large files
+            chunk_size = 1024 * 1024  # 1MB chunks
+            for i in range(0, len(tar_data), chunk_size):
+                chunk = tar_data[i:i + chunk_size]
+                resp.write_stdin(chunk)
             resp.close()
 
             logger.info("World files copied successfully")
+
+            # Fix permissions - Minecraft server runs as UID 1000
+            exec_command = ['chown', '-R', '1000:1000', '/data/world']
+            stream(
+                v1.connect_get_namespaced_pod_exec,
+                copy_pod_name,
+                namespace,
+                command=exec_command,
+                container='copy',
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False
+            )
+            logger.info("Fixed world folder permissions")
 
             return {"status": "success", "message": "World uploaded successfully. Start your server to play!"}
 
@@ -1498,8 +1516,13 @@ def stream_pod_logs(namespace: str, pod_name: str, send_fn, error_fn):
                 else:
                     send_fn(str(line))
         except client.exceptions.ApiException as e:
-            error_msg = f"Kubernetes API error: {e.status} - {e.reason}"
-            logger.error(error_msg)
+            if e.status == 400:
+                # 400 typically means container isn't ready yet
+                error_msg = "Server is still starting up. Logs will be available shortly."
+                logger.info(f"Log stream not ready yet for {pod_name}: {e.status} - {e.reason}")
+            else:
+                error_msg = f"Kubernetes API error: {e.status} - {e.reason}"
+                logger.error(error_msg)
             error_fn(error_msg)
         except Exception as e:
             error_msg = f"Error streaming logs: {type(e).__name__}: {str(e)}"

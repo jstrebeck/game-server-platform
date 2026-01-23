@@ -1,142 +1,92 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useUser } from '@auth0/nextjs-auth0/client'
 import { useAccessToken } from '@/components/AccessTokenProvider'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-const WS_URL = API_URL.replace(/^http/, 'ws')
-const AUTH0_NAMESPACE = 'https://watch2play.local'
+import { MINECRAFT_VERSIONS } from '@/app/lib/constants'
+import { isAdmin, sanitizeUserId } from '@/app/lib/utils'
 
-// Check if user has admin role
-function isAdmin(user: any): boolean {
-  const roles = user?.[`${AUTH0_NAMESPACE}/roles`] || []
-  return Array.isArray(roles) && roles.includes('Admin')
-}
+import { useAuth } from '@/app/hooks/useAuth'
+import { useServer } from '@/app/hooks/useServer'
+import { useBilling } from '@/app/hooks/useBilling'
+import { useLogs } from '@/app/hooks/useLogs'
+import { useMetrics } from '@/app/hooks/useMetrics'
+import { usePlugins } from '@/app/hooks/usePlugins'
+import { useConsole } from '@/app/hooks/useConsole'
+import { useOperations } from '@/app/hooks/useOperations'
+import { useAdmin } from '@/app/hooks/useAdmin'
 
-// Check if JWT token is expired
-function isTokenExpired(token: string): boolean {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]))
-    const exp = payload.exp * 1000 // Convert to milliseconds
-    // Consider expired if less than 30 seconds remaining
-    return Date.now() > exp - 30000
-  } catch {
-    return true
-  }
-}
+import { DetailsTab, MonitoringTab, OperationsTab, PluginsTab, BillingTab, AdminTab } from '@/app/components/tabs'
+import { LogViewer } from '@/app/components/LogViewer'
+import { PaymentModal, CapacityModal, UpgradeModal } from '@/app/components/modals'
+import { LandingPage } from '@/app/components/LandingPage'
+
+type TabType = 'details' | 'monitoring' | 'operations' | 'plugins' | 'billing' | 'admin'
 
 export default function Home() {
   const { user, isLoading: authLoading } = useUser()
   const { getAccessToken } = useAccessToken()
 
-  // Derive userId from Auth0 sub claim (sanitized for K8s namespace)
-  const userId = user?.sub
-    ? user.sub.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 40)
-    : ''
+  const userId = user?.sub ? sanitizeUserId(user.sub) : ''
 
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<any>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [serverExists, setServerExists] = useState<boolean | null>(null) // null = unknown, true = exists, false = doesn't exist
+  const [activeTab, setActiveTab] = useState<TabType>('details')
   const [selectedVersion, setSelectedVersion] = useState('LATEST')
 
-  // Available Minecraft versions
-  const minecraftVersions = [
-    { value: 'LATEST', label: 'Latest' },
-    { value: '1.21.11', label: '1.21.11' },
-    { value: '1.21.4', label: '1.21.4' },
-    { value: '1.21.3', label: '1.21.3' },
-    { value: '1.21.1', label: '1.21.1' },
-    { value: '1.21', label: '1.21' },
-    { value: '1.20.6', label: '1.20.6' },
-    { value: '1.20.4', label: '1.20.4' },
-    { value: '1.20.2', label: '1.20.2' },
-    { value: '1.20.1', label: '1.20.1' },
-    { value: '1.20', label: '1.20' },
-    { value: '1.19.4', label: '1.19.4' },
-    { value: '1.19.2', label: '1.19.2' },
-    { value: '1.18.2', label: '1.18.2' },
-    { value: '1.17.1', label: '1.17.1' },
-    { value: '1.16.5', label: '1.16.5' },
-    { value: '1.12.2', label: '1.12.2' },
-  ]
-  const [logs, setLogs] = useState<string[]>([])
-  const [wsConnected, setWsConnected] = useState(false)
-  const [showLogs, setShowLogs] = useState(false)
-  const [metrics, setMetrics] = useState<{ memory_bytes: number; memory_human: string } | null>(null)
-  const [activeTab, setActiveTab] = useState<'details' | 'monitoring' | 'operations' | 'plugins' | 'billing' | 'admin'>('details')
-  const [availablePlugins, setAvailablePlugins] = useState<any[]>([])
-  const [installedPlugins, setInstalledPlugins] = useState<any[]>([])
-  const [pluginLoading, setPluginLoading] = useState<string | null>(null)
-  const [opPlayerName, setOpPlayerName] = useState('')
-  const [opLoading, setOpLoading] = useState(false)
-  const [opMessage, setOpMessage] = useState<string | null>(null)
-  const [uploadLoading, setUploadLoading] = useState(false)
-  const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  // Admin hook (needs to be initialized first as impersonating state is used by other hooks)
+  const admin = useAdmin({
+    user,
+    getAccessToken,
+    setError: (error) => server.setError(error),
+    onImpersonationChange: () => server.resetServerState(),
+  })
 
-  // Console state
-  const [consoleCommand, setConsoleCommand] = useState('')
-  const [consoleLoading, setConsoleLoading] = useState(false)
-  const [consoleOutput, setConsoleOutput] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const [commandHistory, setCommandHistory] = useState<string[]>([])
-  const [historyIndex, setHistoryIndex] = useState(-1)
+  // Auth hook
+  const { fetchWithAuth } = useAuth(admin.impersonating)
 
-  // Admin impersonation state
-  const [impersonating, setImpersonating] = useState<{ userId: string; sanitizedId: string; email: string | null } | null>(null)
-  const [adminUsers, setAdminUsers] = useState<any[]>([])
-  const [userSearchQuery, setUserSearchQuery] = useState('')
-  const [usersLoading, setUsersLoading] = useState(false)
-  const [usersTotal, setUsersTotal] = useState(0)
+  // Metrics hook
+  const metricsHook = useMetrics({ fetchWithAuth })
 
-  // Cluster stats state (admin only)
-  const [clusterStats, setClusterStats] = useState<{
-    cluster_capacity_gb: number
-    total_allocated_gb: number
-    total_used_gb: number
-    remaining_gb: number
-    active_servers: number
-    usage_percent: number
-  } | null>(null)
-  const [clusterStatsLoading, setClusterStatsLoading] = useState(false)
+  // Billing hook
+  const billing = useBilling({
+    fetchWithAuth,
+    setError: (error) => server.setError(error),
+  })
 
-  // Billing state
-  const [billingStatus, setBillingStatus] = useState<{
-    subscription_status: string
-    stripe_customer_id: string | null
-    subscription_id: string | null
-    trial_started_at: string | null
-    trial_ends_at: string | null
-    is_trial_expired: boolean
-    can_access_server: boolean
-    plan_id: string | null
-    memory: string | null
-  } | null>(null)
-  const [billingLoading, setBillingLoading] = useState(false)
-  const [showPaymentModal, setShowPaymentModal] = useState(false)
-  const [showCapacityModal, setShowCapacityModal] = useState(false)
-  const [paymentError, setPaymentError] = useState<string | null>(null)
-  const [upgradeSuccess, setUpgradeSuccess] = useState<string | null>(null)
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false)
-  const [selectedPlan, setSelectedPlan] = useState<string>('2gb')
-  const [availablePlans, setAvailablePlans] = useState<{ plan_id: string; display_name: string; memory: string; price: string }[]>([
-    { plan_id: '2gb', display_name: '2 GB RAM', memory: '2G', price: '$4.99' },
-    { plan_id: '4gb', display_name: '4 GB RAM', memory: '4G', price: '$9.99' },
-    { plan_id: '6gb', display_name: '6 GB RAM', memory: '6G', price: '$14.99' },
-    { plan_id: '8gb', display_name: '8 GB RAM', memory: '8G', price: '$19.99' },
-  ])
+  // Plugins hook
+  const plugins = usePlugins({
+    fetchWithAuth,
+    setError: (error) => server.setError(error),
+  })
 
-  const wsRef = useRef<WebSocket | null>(null)
-  const logsEndRef = useRef<HTMLDivElement>(null)
-  const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  // Server hook
+  const server = useServer({
+    fetchWithAuth,
+    onServerReady: metricsHook.startMetricsPolling,
+    onServerStopped: () => {
+      logsHook.disconnectLogs()
+      metricsHook.stopMetricsPolling()
+    },
+    fetchPlugins: plugins.fetchPlugins,
+    fetchBillingStatus: billing.fetchBillingStatus,
+    setShowPaymentModal: billing.setShowPaymentModal,
+    setPaymentError: billing.setPaymentError,
+  })
 
-  // Auto-scroll to bottom when new logs arrive
-  useEffect(() => {
-    if (showLogs) {
-      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [logs, showLogs])
+  // Logs hook
+  const logsHook = useLogs({
+    fetchWithAuth,
+    getAccessToken,
+    userId,
+    impersonating: admin.impersonating,
+    setError: server.setError,
+  })
+
+  // Console hook
+  const consoleHook = useConsole({ fetchWithAuth })
+
+  // Operations hook
+  const operations = useOperations({ fetchWithAuth, getAccessToken })
 
   // Handle payment query params on mount
   useEffect(() => {
@@ -144,58 +94,14 @@ export default function Home() {
     const paymentStatus = params.get('payment')
 
     if (paymentStatus === 'success') {
-      // Remove query param from URL without reload
       window.history.replaceState({}, '', window.location.pathname)
-      // Refresh billing status after successful payment
-      setTimeout(() => {
-        fetchBillingStatus()
-      }, 1000)
+      setTimeout(() => billing.fetchBillingStatus(), 1000)
     } else if (paymentStatus === 'canceled') {
-      // Remove query param from URL without reload
       window.history.replaceState({}, '', window.location.pathname)
     }
   }, [])
 
-  // Default to admin tab for admins without a server
-  useEffect(() => {
-    if (isAdmin(user) && serverExists === false && !result) {
-      setActiveTab('admin')
-    }
-  }, [user, serverExists, result])
-
-  // Fetch cluster stats when admin tab is active
-  useEffect(() => {
-    if (isAdmin(user) && activeTab === 'admin' && !clusterStats && !clusterStatsLoading) {
-      fetchClusterStats()
-    }
-  }, [user, activeTab])
-
-  // Cleanup WebSocket and metrics interval on unmount
-  useEffect(() => {
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
-      if (metricsIntervalRef.current) {
-        clearInterval(metricsIntervalRef.current)
-      }
-    }
-  }, [])
-
-  // Fetch billing status
-  async function fetchBillingStatus() {
-    try {
-      const res = await fetchWithAuth(`${API_URL}/billing/status`)
-      if (res.ok) {
-        const data = await res.json()
-        setBillingStatus(data)
-      }
-    } catch (err) {
-      console.error('Error fetching billing status:', err)
-    }
-  }
-
-  // Auto-check for existing server and billing status when user is authenticated or impersonation changes
+  // Auto-check for existing server and billing status
   useEffect(() => {
     async function checkExistingServer() {
       if (!user || authLoading) return
@@ -203,32 +109,28 @@ export default function Home() {
       const token = await getAccessToken()
       if (!token) return
 
-      // Fetch billing status
-      fetchBillingStatus()
+      billing.fetchBillingStatus()
 
       try {
         const headers: Record<string, string> = {
           'Authorization': `Bearer ${token}`,
         }
-
-        // Add impersonation header if active
-        if (impersonating) {
-          headers['X-Impersonate-User'] = impersonating.userId
+        if (admin.impersonating) {
+          headers['X-Impersonate-User'] = admin.impersonating.userId
         }
 
-        const res = await fetch(`${API_URL}/gameserver`, { headers })
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/gameserver`, { headers })
 
         if (res.ok) {
           const data = await res.json()
-          setResult(data)
-          setServerExists(true)
+          server.setResult(data)
+          server.setServerExists(true)
           if (data.status === 'ready') {
-            startMetricsPolling()
+            metricsHook.startMetricsPolling()
           }
-          fetchAvailablePlugins()
-          fetchInstalledPlugins()
+          plugins.fetchPlugins()
         } else if (res.status === 404) {
-          setServerExists(false)
+          server.setServerExists(false)
         }
       } catch (err) {
         console.error('Error checking for existing server:', err)
@@ -236,790 +138,23 @@ export default function Home() {
     }
 
     checkExistingServer()
-  }, [user, authLoading, impersonating])
+  }, [user, authLoading, admin.impersonating])
 
-  // Helper function for authenticated API calls
-  async function fetchWithAuth(url: string, options: RequestInit = {}) {
-    let token = await getAccessToken()
-
-    if (!token) {
-      // No token, redirect to login
-      window.location.href = '/auth/login'
-      throw new Error('Not authenticated')
+  // Default to admin tab for admins without a server
+  useEffect(() => {
+    if (isAdmin(user) && server.serverExists === false && !server.result) {
+      setActiveTab('admin')
     }
+  }, [user, server.serverExists, server.result])
 
-    // Check if token is expired
-    if (isTokenExpired(token)) {
-      console.log('Token expired, requesting fresh token...')
-      // Token expired, force a fresh token fetch
-      token = await getAccessToken(true)
-
-      if (!token || isTokenExpired(token)) {
-        // Still expired, redirect to login
-        console.log('Could not refresh token, redirecting to login...')
-        window.location.href = '/auth/login'
-        throw new Error('Session expired')
-      }
+  // Fetch cluster stats when admin tab is active
+  useEffect(() => {
+    if (isAdmin(user) && activeTab === 'admin' && !admin.clusterStats && !admin.clusterStatsLoading) {
+      admin.fetchClusterStats()
     }
+  }, [user, activeTab])
 
-    const headers: Record<string, string> = {
-      ...options.headers as Record<string, string>,
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/json',
-    }
-
-    // Add impersonation header if active
-    if (impersonating) {
-      headers['X-Impersonate-User'] = impersonating.userId
-    }
-
-    return fetch(url, {
-      ...options,
-      headers,
-    })
-  }
-
-  async function fetchMetrics() {
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/metrics`)
-      if (res.ok) {
-        const data = await res.json()
-        console.log('Metrics response:', data)
-        // Get the minecraft container metrics (first one)
-        if (data.metrics && data.metrics.length > 0) {
-          const mcMetrics = data.metrics.find((m: any) => m.container === 'minecraft') || data.metrics[0]
-          setMetrics({
-            memory_bytes: mcMetrics.memory_bytes,
-            memory_human: mcMetrics.memory_human
-          })
-        } else {
-          setMetrics({ memory_bytes: 0, memory_human: 'N/A' })
-        }
-      } else {
-        console.log('Metrics fetch failed:', res.status)
-        setMetrics({ memory_bytes: 0, memory_human: 'N/A' })
-      }
-    } catch (err) {
-      console.log('Failed to fetch metrics:', err)
-      setMetrics({ memory_bytes: 0, memory_human: 'N/A' })
-    }
-  }
-
-  function startMetricsPolling() {
-    // Clear any existing interval
-    if (metricsIntervalRef.current) {
-      clearInterval(metricsIntervalRef.current)
-    }
-    // Fetch immediately
-    fetchMetrics()
-    // Then poll every 10 seconds
-    metricsIntervalRef.current = setInterval(fetchMetrics, 10000)
-  }
-
-  function stopMetricsPolling() {
-    if (metricsIntervalRef.current) {
-      clearInterval(metricsIntervalRef.current)
-      metricsIntervalRef.current = null
-    }
-    setMetrics(null)
-  }
-
-  async function fetchAvailablePlugins() {
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins/available`)
-      if (res.ok) {
-        const data = await res.json()
-        setAvailablePlugins(data.plugins || [])
-      }
-    } catch (err) {
-      console.log('Failed to fetch available plugins:', err)
-    }
-  }
-
-  async function fetchInstalledPlugins() {
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins`)
-      if (res.ok) {
-        const data = await res.json()
-        setInstalledPlugins(data.plugins || [])
-      }
-    } catch (err) {
-      console.log('Failed to fetch installed plugins:', err)
-    }
-  }
-
-  async function installPlugin(pluginId: string) {
-    setPluginLoading(pluginId)
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins/${pluginId}`, {
-        method: 'POST'
-      })
-      if (res.ok) {
-        await fetchInstalledPlugins()
-      } else {
-        const data = await res.json()
-        setError(data.detail || 'Failed to install plugin')
-      }
-    } catch (err) {
-      console.error('Failed to install plugin:', err)
-      setError('Failed to install plugin')
-    } finally {
-      setPluginLoading(null)
-    }
-  }
-
-  async function uninstallPlugin(pluginId: string) {
-    setPluginLoading(pluginId)
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/plugins/${pluginId}`, {
-        method: 'DELETE'
-      })
-      if (res.ok) {
-        await fetchInstalledPlugins()
-      } else {
-        const data = await res.json()
-        setError(data.detail || 'Failed to uninstall plugin')
-      }
-    } catch (err) {
-      console.error('Failed to uninstall plugin:', err)
-      setError('Failed to uninstall plugin')
-    } finally {
-      setPluginLoading(null)
-    }
-  }
-
-  function isPluginInstalled(pluginId: string): boolean {
-    return installedPlugins.some(p => p.id === pluginId)
-  }
-
-  async function opPlayer() {
-    if (!opPlayerName.trim()) return
-
-    setOpLoading(true)
-    setOpMessage(null)
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/op/${encodeURIComponent(opPlayerName.trim())}`, {
-        method: 'POST'
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setOpMessage(`Successfully opped ${opPlayerName}`)
-        setOpPlayerName('')
-      } else {
-        setOpMessage(data.detail || 'Failed to op player')
-      }
-    } catch (err) {
-      console.error('Failed to op player:', err)
-      setOpMessage('Failed to op player')
-    } finally {
-      setOpLoading(false)
-      // Clear message after 5 seconds
-      setTimeout(() => setOpMessage(null), 5000)
-    }
-  }
-
-  async function executeConsoleCommand() {
-    const command = consoleCommand.trim()
-    if (!command) return
-
-    setConsoleLoading(true)
-    setConsoleOutput(null)
-
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/console`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ command }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setConsoleOutput({ type: 'success', text: data.output || 'Command executed' })
-        // Add to history (avoid duplicates at the end)
-        setCommandHistory(prev => {
-          const newHistory = prev.filter(cmd => cmd !== command)
-          return [...newHistory, command].slice(-50) // Keep last 50 commands
-        })
-        setConsoleCommand('')
-        setHistoryIndex(-1)
-      } else {
-        setConsoleOutput({ type: 'error', text: data.detail || 'Failed to execute command' })
-      }
-    } catch (err) {
-      console.error('Failed to execute console command:', err)
-      setConsoleOutput({ type: 'error', text: 'Failed to execute command' })
-    } finally {
-      setConsoleLoading(false)
-    }
-  }
-
-  function handleConsoleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter') {
-      executeConsoleCommand()
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (commandHistory.length > 0) {
-        const newIndex = historyIndex === -1 ? commandHistory.length - 1 : Math.max(0, historyIndex - 1)
-        setHistoryIndex(newIndex)
-        setConsoleCommand(commandHistory[newIndex])
-      }
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (historyIndex !== -1) {
-        const newIndex = historyIndex + 1
-        if (newIndex >= commandHistory.length) {
-          setHistoryIndex(-1)
-          setConsoleCommand('')
-        } else {
-          setHistoryIndex(newIndex)
-          setConsoleCommand(commandHistory[newIndex])
-        }
-      }
-    }
-  }
-
-  async function uploadWorld(file: File) {
-    setUploadLoading(true)
-    setUploadMessage(null)
-
-    try {
-      const token = await getAccessToken()
-      if (!token) {
-        setUploadMessage({ type: 'error', text: 'Authentication required' })
-        return
-      }
-
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const res = await fetch(`${API_URL}/gameserver/world/upload`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-        body: formData,
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setUploadMessage({ type: 'success', text: data.message || 'World uploaded successfully! Start your server to play.' })
-      } else {
-        setUploadMessage({ type: 'error', text: data.detail || 'Failed to upload world' })
-      }
-    } catch (err) {
-      console.error('Failed to upload world:', err)
-      setUploadMessage({ type: 'error', text: 'Failed to upload world. Please try again.' })
-    } finally {
-      setUploadLoading(false)
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
-      }
-    }
-  }
-
-  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    // Validate file type
-    if (!file.name.endsWith('.zip')) {
-      setUploadMessage({ type: 'error', text: 'Please select a .zip file' })
-      return
-    }
-
-    // Validate file size (500MB max)
-    const maxSize = 500 * 1024 * 1024
-    if (file.size > maxSize) {
-      setUploadMessage({ type: 'error', text: 'File too large. Maximum size is 500MB.' })
-      return
-    }
-
-    uploadWorld(file)
-  }
-
-  // Admin functions
-  async function searchUsers(query: string = '') {
-    if (!isAdmin(user)) return
-
-    setUsersLoading(true)
-    try {
-      const token = await getAccessToken()
-      if (!token) return
-
-      const params = new URLSearchParams()
-      if (query) params.set('search', query)
-      params.set('per_page', '50')
-
-      const res = await fetch(`${API_URL}/admin/users?${params}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        },
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        setAdminUsers(data.users || [])
-        setUsersTotal(data.total || 0)
-      } else {
-        console.error('Failed to fetch users:', res.status)
-        setError('Failed to load users')
-      }
-    } catch (err) {
-      console.error('Error fetching users:', err)
-      setError('Failed to load users')
-    } finally {
-      setUsersLoading(false)
-    }
-  }
-
-  async function fetchClusterStats() {
-    if (!isAdmin(user)) return
-
-    setClusterStatsLoading(true)
-    try {
-      const token = await getAccessToken()
-      if (!token) return
-
-      const res = await fetch(`${API_URL}/admin/cluster-stats`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        },
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        setClusterStats(data)
-      } else {
-        console.error('Failed to fetch cluster stats:', res.status)
-      }
-    } catch (err) {
-      console.error('Error fetching cluster stats:', err)
-    } finally {
-      setClusterStatsLoading(false)
-    }
-  }
-
-  async function startImpersonation(targetUserId: string) {
-    if (!isAdmin(user)) return
-
-    try {
-      const token = await getAccessToken()
-      if (!token) return
-
-      const res = await fetch(`${API_URL}/admin/impersonate`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({ user_id: targetUserId }),
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        setImpersonating({
-          userId: data.user_id,
-          sanitizedId: data.sanitized_id,
-          email: data.email,
-        })
-        // Reset server state to trigger re-fetch
-        setResult(null)
-        setServerExists(null)
-      } else {
-        const data = await res.json()
-        setError(data.detail || 'Failed to impersonate user')
-      }
-    } catch (err) {
-      console.error('Error starting impersonation:', err)
-      setError('Failed to impersonate user')
-    }
-  }
-
-  function stopImpersonation() {
-    setImpersonating(null)
-    // Reset server state to trigger re-fetch as the original user
-    setResult(null)
-    setServerExists(null)
-  }
-
-  async function connectToLogs(namespace: string, podName: string) {
-    // Close existing connection if any
-    if (wsRef.current) {
-      wsRef.current.close()
-    }
-
-    const token = await getAccessToken()
-    if (!token) {
-      setError('Authentication required for log streaming')
-      return
-    }
-
-    setLogs([])
-    setShowLogs(true)
-
-    // Pass token as query parameter for WebSocket auth
-    // Include impersonation user ID if active
-    let wsUrl = `${WS_URL}/ws/logs/${namespace}/${podName}?token=${encodeURIComponent(token)}`
-    if (impersonating) {
-      wsUrl += `&impersonate=${encodeURIComponent(impersonating.userId)}`
-    }
-    const ws = new WebSocket(wsUrl)
-
-    ws.onopen = () => {
-      console.log('WebSocket connected')
-      setWsConnected(true)
-    }
-
-    ws.onmessage = (event) => {
-      setLogs(prev => [...prev, event.data])
-    }
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
-      setWsConnected(false)
-    }
-
-    ws.onclose = () => {
-      console.log('WebSocket closed')
-      setWsConnected(false)
-    }
-
-    wsRef.current = ws
-  }
-
-  function disconnectLogs() {
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
-    }
-    setWsConnected(false)
-    setShowLogs(false)
-  }
-
-  async function fetchPodsAndConnect() {
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/pods`)
-      if (!res.ok) {
-        throw new Error(`Failed to fetch pods: ${res.status}`)
-      }
-
-      const data = await res.json()
-      console.log('Pods:', data.pods)
-
-      if (data.pods && data.pods.length > 0) {
-        // Connect to the first pod (typically the minecraft server)
-        const podName = data.pods[0].name
-        // Use impersonated user's ID if impersonating, otherwise use own ID
-        const effectiveUserId = impersonating ? impersonating.sanitizedId : userId
-        const namespace = `server-${effectiveUserId}`
-        connectToLogs(namespace, podName)
-      } else {
-        alert('No pods found. The server might still be starting up.')
-      }
-    } catch (error) {
-      console.error('Error fetching pods:', error)
-      alert('Failed to fetch pod information. Please try again.')
-    }
-  }
-
-  async function getExistingServer() {
-    setLoading(true)
-    setResult(null)
-    setError(null)
-    setShowLogs(false)
-    disconnectLogs()
-    stopMetricsPolling()
-
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver`)
-
-      if (!res.ok) {
-        if (res.status === 404) {
-          setServerExists(false)
-          setError('No server found. Create a new server to get started.')
-        } else if (res.status === 401) {
-          setError('Authentication expired. Please log in again.')
-        } else {
-          setError(`Failed to fetch server info (Error ${res.status}). Please try again.`)
-        }
-        setLoading(false)
-        return
-      }
-
-      const data = await res.json()
-      console.log('Existing server:', data)
-      setResult(data)
-      setServerExists(true)
-      setError(null)
-
-      // Start metrics polling if server is ready
-      if (data.status === 'ready') {
-        startMetricsPolling()
-      }
-
-      // Fetch plugins
-      fetchAvailablePlugins()
-      fetchInstalledPlugins()
-    } catch (err) {
-      console.error('Error fetching server:', err)
-      setError('Failed to connect to backend. Please ensure the backend server is running.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function handleSubscribe(planId: string = selectedPlan) {
-    setBillingLoading(true)
-    setPaymentError(null)
-    try {
-      const res = await fetchWithAuth(`${API_URL}/billing/checkout`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ plan_id: planId }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        // Redirect to Stripe Checkout
-        window.location.href = data.checkout_url
-      } else if (res.status === 503) {
-        // Cluster at capacity
-        setShowCapacityModal(true)
-      } else {
-        const data = await res.json()
-        setPaymentError(data.detail || 'Failed to create checkout session')
-      }
-    } catch (err) {
-      console.error('Error creating checkout:', err)
-      setPaymentError('Failed to create checkout session. Please try again.')
-    } finally {
-      setBillingLoading(false)
-    }
-  }
-
-  async function handleManageSubscription() {
-    setBillingLoading(true)
-    try {
-      const res = await fetchWithAuth(`${API_URL}/billing/portal`, {
-        method: 'POST',
-      })
-      if (res.ok) {
-        const data = await res.json()
-        // Open portal in new tab
-        window.open(data.portal_url, '_blank')
-      } else {
-        const data = await res.json()
-        setError(data.detail || 'Failed to open billing portal')
-      }
-    } catch (err) {
-      console.error('Error opening portal:', err)
-      setError('Failed to open billing portal. Please try again.')
-    } finally {
-      setBillingLoading(false)
-    }
-  }
-
-  function getNextPlan(currentPlanId: string | null) {
-    const planOrder = ['2gb', '4gb', '6gb', '8gb']
-    const currentIndex = planOrder.indexOf(currentPlanId || '2gb')
-    if (currentIndex >= 0 && currentIndex < planOrder.length - 1) {
-      const nextPlanId = planOrder[currentIndex + 1]
-      return availablePlans.find(p => p.plan_id === nextPlanId) || null
-    }
-    return null
-  }
-
-  function getCurrentPlan(currentPlanId: string | null) {
-    return availablePlans.find(p => p.plan_id === (currentPlanId || '2gb')) || null
-  }
-
-  async function handleUpgrade() {
-    setBillingLoading(true)
-    setPaymentError(null)
-    setUpgradeSuccess(null)
-    try {
-      const res = await fetchWithAuth(`${API_URL}/billing/upgrade`, {
-        method: 'POST',
-      })
-      if (res.ok) {
-        const data = await res.json()
-        // Refresh billing status to show new plan
-        await fetchBillingStatus()
-        // Show success message temporarily
-        setUpgradeSuccess(data.message)
-        setTimeout(() => setUpgradeSuccess(null), 5000)
-      } else if (res.status === 503) {
-        // Cluster at capacity
-        setShowCapacityModal(true)
-      } else {
-        const data = await res.json()
-        setPaymentError(data.detail || 'Failed to upgrade subscription')
-      }
-    } catch (err) {
-      console.error('Error upgrading:', err)
-      setPaymentError('Failed to upgrade subscription. Please try again.')
-    } finally {
-      setBillingLoading(false)
-    }
-  }
-
-  async function startServer() {
-    setLoading(true)
-    setError(null)
-
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/start`, {
-        method: 'POST',
-      })
-
-      if (!res.ok) {
-        if (res.status === 402) {
-          // Payment required - show payment modal
-          const data = await res.json()
-          setPaymentError(data.detail?.message || 'Subscription required to start server')
-          setShowPaymentModal(true)
-          // Refresh billing status
-          fetchBillingStatus()
-        } else {
-          setError(`Failed to start server (Error ${res.status})`)
-        }
-        return
-      }
-
-      const data = await res.json()
-      console.log('Start response:', data)
-      // Refresh server info after starting
-      await getExistingServer()
-    } catch (err) {
-      console.error('Error starting server:', err)
-      setError('Failed to start server. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function stopServer() {
-    setLoading(true)
-    setError(null)
-    disconnectLogs()
-    stopMetricsPolling()
-
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver/stop`, {
-        method: 'POST',
-      })
-
-      if (!res.ok) {
-        setError(`Failed to stop server (Error ${res.status})`)
-        return
-      }
-
-      const data = await res.json()
-      console.log('Stop response:', data)
-      // Refresh server info after stopping
-      await getExistingServer()
-    } catch (err) {
-      console.error('Error stopping server:', err)
-      setError('Failed to stop server. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function deleteServer() {
-    if (!confirm('Are you sure you want to delete your server? This action cannot be undone.')) {
-      return
-    }
-
-    setLoading(true)
-    setError(null)
-    disconnectLogs()
-    stopMetricsPolling()
-
-    try {
-      const res = await fetchWithAuth(`${API_URL}/gameserver`, {
-        method: 'DELETE',
-      })
-
-      if (!res.ok) {
-        setError(`Failed to delete server (Error ${res.status})`)
-        return
-      }
-
-      const data = await res.json()
-      console.log('Delete response:', data)
-      setResult(null)
-      setServerExists(false)
-      setError(null)
-    } catch (err) {
-      console.error('Error deleting server:', err)
-      setError('Failed to delete server. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function createServer() {
-    setLoading(true)
-    setResult(null)
-    setError(null)
-    setShowLogs(false)
-    disconnectLogs()
-    stopMetricsPolling()
-
-    try {
-      const res = await fetchWithAuth(
-        `${API_URL}/gameserver?game=minecraft&version=${selectedVersion}`,
-        { method: 'POST' }
-      )
-
-      if (!res.ok) {
-        // Handle specific error codes
-        if (res.status === 409) {
-          setServerExists(true)
-          setError('Server already exists.')
-          // Auto-fetch the existing server details
-          await getExistingServer()
-        } else if (res.status === 500) {
-          setError('Server error occurred. Please try again later.')
-        } else if (res.status === 401) {
-          setError('Authentication expired. Please log in again.')
-        } else {
-          setError(`Failed to create server (Error ${res.status}). Please try again.`)
-        }
-        setLoading(false)
-        return
-      }
-
-      const data = await res.json()
-      console.log('API response:', data)
-      setResult(data)
-      setServerExists(true)
-      setError(null)
-      setActiveTab('details')  // Show Connect tab after creation
-
-      // Start metrics polling if server is ready
-      if (data.status === 'ready') {
-        startMetricsPolling()
-      }
-    } catch (err) {
-      console.error('Error creating server:', err)
-      setError('An unexpected error occurred. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Loading state while checking authentication
+  // Loading state
   if (authLoading) {
     return (
       <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white flex items-center justify-center">
@@ -1033,155 +168,23 @@ export default function Home() {
 
   // Login screen for unauthenticated users
   if (!user) {
-    return (
-      <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white">
-        {/* Hero Section */}
-        <div className="flex flex-col items-center justify-center min-h-screen p-4">
-          <div className="text-center max-w-4xl mx-auto">
-            <img src="/logo.svg" alt="Minecraft Hosting" className="h-24 md:h-32 mx-auto mb-4" />
-            <h1 className="text-5xl md:text-6xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-4">
-              Cheap Minecraft Server Hosting
-            </h1>
-            <p className="text-slate-300 mb-2 text-xl md:text-2xl font-medium">Easy Minecraft Hosting Starting at $4.99/month</p>
-            <p className="text-slate-400 mb-8 text-base md:text-lg max-w-2xl mx-auto">
-              Get your own private Minecraft server ready in seconds. No technical knowledge required. The easiest and most affordable way to play Minecraft with friends.
-            </p>
-
-            <a
-              href="/auth/login"
-              className="py-4 px-10 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] text-lg inline-block mb-16"
-            >
-              Get Started
-            </a>
-
-            {/* Features Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 text-left mb-16">
-              {/* Feature 1 */}
-              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
-                <div className="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center mb-4">
-                  <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white mb-2">Instant Minecraft Server Setup</h3>
-                <p className="text-slate-400 text-sm">
-                  Your Minecraft server is ready in seconds. No downloads, no configuration files, no command line. The easiest Minecraft hosting experience available.
-                </p>
-              </div>
-
-              {/* Feature 2 */}
-              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
-                <div className="w-12 h-12 bg-emerald-500/20 rounded-xl flex items-center justify-center mb-4">
-                  <svg className="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white mb-2">Multiplayer Minecraft Made Easy</h3>
-                <p className="text-slate-400 text-sm">
-                  Share your Minecraft server address with friends and start playing together instantly. Build, explore, and survive as a team on your own hosted server.
-                </p>
-              </div>
-
-              {/* Feature 3 */}
-              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
-                <div className="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center mb-4">
-                  <svg className="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white mb-2">Cloud Minecraft Hosting</h3>
-                <p className="text-slate-400 text-sm">
-                  Stop worrying about computer specs or leaving your PC running. Our cheap Minecraft server hosting handles all the heavy lifting in the cloud.
-                </p>
-              </div>
-
-              {/* Feature 4 */}
-              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
-                <div className="w-12 h-12 bg-cyan-500/20 rounded-xl flex items-center justify-center mb-4">
-                  <svg className="w-6 h-6 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white mb-2">Easy Server Management</h3>
-                <p className="text-slate-400 text-sm">
-                  Start, stop, and manage your Minecraft server from any device. View live logs, monitor performance, and install plugins with one click. Easy Minecraft hosting at its best.
-                </p>
-              </div>
-
-              {/* Feature 5 */}
-              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
-                <div className="w-12 h-12 bg-amber-500/20 rounded-xl flex items-center justify-center mb-4">
-                  <svg className="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white mb-2">DDoS Protected</h3>
-                <p className="text-slate-400 text-sm">
-                  Your server is protected against attacks. Play without interruptions and keep griefers at bay.
-                </p>
-              </div>
-
-              {/* Feature 6 */}
-              <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-800 hover:border-indigo-500/50 transition-colors">
-                <div className="w-12 h-12 bg-rose-500/20 rounded-xl flex items-center justify-center mb-4">
-                  <svg className="w-6 h-6 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-semibold text-white mb-2">Your World, Your Rules</h3>
-                <p className="text-slate-400 text-sm">
-                  Full control over your server. Add plugins, set permissions, whitelist players, and customize your experience.
-                </p>
-              </div>
-            </div>
-
-            {/* Why Host Section */}
-            <div className="bg-slate-900/30 backdrop-blur-sm rounded-2xl p-8 border border-slate-800 mb-8">
-              <h2 className="text-2xl font-bold text-white mb-4">Why Choose Our Minecraft Server Hosting?</h2>
-              <div className="text-left text-slate-300 space-y-4">
-                <p>
-                  Looking for cheap Minecraft hosting that doesn&apos;t compromise on quality? Our affordable Minecraft server hosting gives you
-                  your own private world where you decide who can join, what plugins to use, and how the game is played.
-                </p>
-                <p>
-                  Whether you want a peaceful survival world with close friends, an epic creative building project,
-                  or a custom minigame server, our easy Minecraft hosting makes it possible without any technical hassle.
-                </p>
-                <p className="text-slate-400 text-sm">
-                  Traditional self-hosting requires port forwarding, static IPs, and keeping your computer running 24/7.
-                  With our Minecraft server hosting starting at just $4.99/month, we eliminate all of that complexity so you can focus on playing.
-                </p>
-              </div>
-            </div>
-
-            {/* CTA */}
-            <a
-              href="/auth/login"
-              className="py-4 px-10 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] text-lg inline-block"
-            >
-              Start Your Minecraft Server Now
-            </a>
-            <p className="text-slate-500 text-sm mt-4">Free trial available. Plans start at just $4.99/month.</p>
-          </div>
-        </div>
-      </main>
-    )
+    return <LandingPage />
   }
 
   // Authenticated user view
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white flex items-center justify-center p-4">
       {/* Impersonation Banner */}
-      {impersonating && (
+      {admin.impersonating && (
         <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-4 shadow-lg">
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
           <span className="font-medium">
-            Impersonating: {impersonating.email || impersonating.userId}
+            Impersonating: {admin.impersonating.email || admin.impersonating.userId}
           </span>
           <button
-            onClick={stopImpersonation}
+            onClick={admin.stopImpersonation}
             className="px-3 py-1 bg-black/20 hover:bg-black/30 rounded-lg text-sm font-medium transition-colors"
           >
             Exit Impersonation
@@ -1189,8 +192,8 @@ export default function Home() {
         </div>
       )}
 
-      <div className={`w-full max-w-2xl ${impersonating ? 'pt-12' : ''}`}>
-        {/* Header with user info */}
+      <div className={`w-full max-w-2xl ${admin.impersonating ? 'pt-12' : ''}`}>
+        {/* Header */}
         <div className="text-center mb-8">
           <img src="/logo.svg" alt="Minecraft Hosting" className="h-16 mx-auto mb-2" />
           <h1 className="text-4xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent mb-2">
@@ -1214,7 +217,7 @@ export default function Home() {
         {/* Main Card */}
         <div className="bg-slate-900/80 backdrop-blur-sm rounded-2xl shadow-2xl border border-slate-800 overflow-hidden">
           {/* Subscription Banner */}
-          {billingStatus && !billingStatus.can_access_server && serverExists && (
+          {billing.billingStatus && !billing.billingStatus.can_access_server && server.serverExists && (
             <div className="bg-gradient-to-r from-amber-600/20 to-orange-600/20 border-b border-amber-500/30 p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -1222,33 +225,33 @@ export default function Home() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                   </svg>
                   <p className="text-amber-200 text-sm">
-                    {billingStatus.is_trial_expired
+                    {billing.billingStatus.is_trial_expired
                       ? 'Your trial has expired. Subscribe to continue using your server.'
-                      : billingStatus.subscription_status === 'past_due'
+                      : billing.billingStatus.subscription_status === 'past_due'
                       ? 'Payment failed. Please update your payment method.'
                       : 'Subscription required to start your server.'}
                   </p>
                 </div>
                 <button
-                  onClick={() => handleSubscribe(selectedPlan)}
-                  disabled={billingLoading}
+                  onClick={() => billing.handleSubscribe(billing.selectedPlan)}
+                  disabled={billing.billingLoading}
                   className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg text-black text-sm font-semibold transition-colors whitespace-nowrap"
                 >
-                  {billingLoading ? 'Loading...' : 'Subscribe Now'}
+                  {billing.billingLoading ? 'Loading...' : 'Subscribe Now'}
                 </button>
               </div>
             </div>
           )}
 
           {/* Trial Countdown Banner */}
-          {billingStatus && billingStatus.subscription_status === 'trialing' && !billingStatus.is_trial_expired && billingStatus.trial_ends_at && (
+          {billing.billingStatus && billing.billingStatus.subscription_status === 'trialing' && !billing.billingStatus.is_trial_expired && billing.billingStatus.trial_ends_at && (
             <div className="bg-gradient-to-r from-blue-600/20 to-indigo-600/20 border-b border-blue-500/30 p-3">
               <div className="flex items-center justify-center gap-2">
                 <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <p className="text-blue-200 text-sm">
-                  Free trial ends: <span className="font-medium">{new Date(billingStatus.trial_ends_at).toLocaleString()}</span>
+                  Free trial ends: <span className="font-medium">{new Date(billing.billingStatus.trial_ends_at).toLocaleString()}</span>
                 </p>
               </div>
             </div>
@@ -1257,7 +260,7 @@ export default function Home() {
           {/* Server Actions Section */}
           <div className="p-6 space-y-4">
             <div className="flex justify-center">
-              {serverExists === null ? (
+              {server.serverExists === null ? (
                 <div className="py-3 px-4 text-slate-400">
                   <span className="flex items-center justify-center gap-2">
                     <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
@@ -1267,33 +270,28 @@ export default function Home() {
                     Checking server status...
                   </span>
                 </div>
-              ) : serverExists === false ? (
+              ) : server.serverExists === false ? (
                 <div className="w-full space-y-4">
-                  {/* Version Selector */}
                   <div className="flex flex-col gap-2">
                     <label className="text-sm text-slate-400 text-left">Minecraft Version</label>
                     <select
                       value={selectedVersion}
                       onChange={(e) => setSelectedVersion(e.target.value)}
-                      disabled={loading}
+                      disabled={server.loading}
                       className="w-full py-3 px-4 rounded-xl bg-slate-800 border border-slate-700 text-white font-medium focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed appearance-none cursor-pointer"
                       style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '1.5rem' }}
                     >
-                      {minecraftVersions.map((v) => (
-                        <option key={v.value} value={v.value}>
-                          {v.label}
-                        </option>
+                      {MINECRAFT_VERSIONS.map((v) => (
+                        <option key={v.value} value={v.value}>{v.label}</option>
                       ))}
                     </select>
                   </div>
-
-                  {/* Create Button */}
                   <button
-                    onClick={createServer}
-                    disabled={loading}
+                    onClick={() => server.createServer(selectedVersion)}
+                    disabled={server.loading}
                     className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none"
                   >
-                    {loading ? (
+                    {server.loading ? (
                       <span className="flex items-center justify-center gap-2">
                         <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
@@ -1313,11 +311,11 @@ export default function Home() {
                 </div>
               ) : (
                 <button
-                  onClick={getExistingServer}
-                  disabled={loading}
+                  onClick={server.getExistingServer}
+                  disabled={server.loading}
                   className="w-full py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-slate-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none border border-slate-600"
                 >
-                  {loading ? (
+                  {server.loading ? (
                     <span className="flex items-center justify-center gap-2">
                       <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
@@ -1338,19 +336,18 @@ export default function Home() {
             </div>
 
             {/* Error Message */}
-            {error && (
+            {server.error && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 flex items-start gap-3">
                 <svg className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <div className="flex-1">
                   <h3 className="text-red-400 font-semibold mb-1">Error</h3>
-                  <p className="text-red-200 text-sm">{error}</p>
+                  <p className="text-red-200 text-sm">{server.error}</p>
                 </div>
                 <button
-                  onClick={() => setError(null)}
+                  onClick={() => server.setError(null)}
                   className="text-red-400 hover:text-red-300 transition-colors"
-                  aria-label="Dismiss error"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1360,1197 +357,202 @@ export default function Home() {
             )}
           </div>
 
-          {/* Server Status Section */}
-          {(result || isAdmin(user)) && (
+          {/* Server Status Section with Tabs */}
+          {(server.result || isAdmin(user)) && (
             <div className="border-t border-slate-800 bg-slate-900/50 p-6">
               {/* Tab Navigation */}
               <div className="flex items-center gap-1 mb-4 border-b border-slate-700">
-                {result && (
+                {server.result && (
                   <>
-                    <button
-                      onClick={() => setActiveTab('details')}
-                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                        activeTab === 'details'
-                          ? 'text-indigo-400'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      Connect
-                      {activeTab === 'details' && (
-                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('monitoring')}
-                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                        activeTab === 'monitoring'
-                          ? 'text-indigo-400'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      Monitoring
-                      {activeTab === 'monitoring' && (
-                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('operations')}
-                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                        activeTab === 'operations'
-                          ? 'text-indigo-400'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      Operations
-                      {activeTab === 'operations' && (
-                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('plugins')}
-                      className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                        activeTab === 'plugins'
-                          ? 'text-indigo-400'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      Plugins
-                      {activeTab === 'plugins' && (
-                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-400" />
-                      )}
-                    </button>
+                    <TabButton active={activeTab === 'details'} onClick={() => setActiveTab('details')} color="indigo">Connect</TabButton>
+                    <TabButton active={activeTab === 'monitoring'} onClick={() => setActiveTab('monitoring')} color="indigo">Monitoring</TabButton>
+                    <TabButton active={activeTab === 'operations'} onClick={() => setActiveTab('operations')} color="indigo">Operations</TabButton>
+                    <TabButton active={activeTab === 'plugins'} onClick={() => setActiveTab('plugins')} color="indigo">Plugins</TabButton>
                   </>
                 )}
-                <button
-                  onClick={() => setActiveTab('billing')}
-                  className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                    activeTab === 'billing'
-                      ? 'text-emerald-400'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Billing
-                  {activeTab === 'billing' && (
-                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-400" />
-                  )}
-                </button>
+                <TabButton active={activeTab === 'billing'} onClick={() => setActiveTab('billing')} color="emerald">Billing</TabButton>
                 {isAdmin(user) && (
-                  <button
-                    onClick={() => setActiveTab('admin')}
-                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                      activeTab === 'admin'
-                        ? 'text-amber-400'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Admin
-                    {activeTab === 'admin' && (
-                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-400" />
-                    )}
-                  </button>
+                  <TabButton active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} color="amber">Admin</TabButton>
                 )}
                 <div className="flex-1" />
-                {result && (
+                {server.result && (
                   <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                    result.status === 'ready'
+                    server.result.status === 'ready'
                       ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                      : result.status === 'stopped'
+                      : server.result.status === 'stopped'
                       ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
                       : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
                   }`}>
-                    {result.status === 'ready' ? '● Ready' : result.status === 'stopped' ? '● Stopped' : '● Starting'}
+                    {server.result.status === 'ready' ? '● Ready' : server.result.status === 'stopped' ? '● Stopped' : '● Starting'}
                   </span>
                 )}
               </div>
 
-              {/* Details Tab */}
-              {activeTab === 'details' && result && (
-                <div className="space-y-3 mb-4">
-                  <div className="p-3 bg-slate-800/50 rounded-lg">
-                    <span className="text-slate-400 text-sm block mb-1">Connect with</span>
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-indigo-400 font-medium">{result.hostname}</span>
-                      <button
-                        onClick={() => navigator.clipboard.writeText(result.hostname)}
-                        className="text-slate-400 hover:text-white transition-colors p-1"
-                        title="Copy to clipboard"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div className="p-3 bg-slate-800/50 rounded-lg">
-                    <span className="text-slate-400 text-sm block mb-1">Minecraft Version</span>
-                    <span className="text-white font-medium">{result.version || 'Unknown'}</span>
-                  </div>
-                </div>
+              {/* Tab Content */}
+              {activeTab === 'details' && server.result && (
+                <DetailsTab result={server.result} />
               )}
 
-              {/* Monitoring Tab */}
-              {activeTab === 'monitoring' && result && (
-                <div className="space-y-4 mb-4">
-                  {/* RAM Usage */}
-                  {result.status === 'ready' && (
-                    (() => {
-                      // Parse plan memory (e.g., "4G" -> 4 * 1024^3 bytes)
-                      const planMemoryStr = billingStatus?.memory || '2G'
-                      const planMemoryGB = parseInt(planMemoryStr.replace('G', '')) || 2
-                      const planMemoryBytes = planMemoryGB * 1024 * 1024 * 1024
-
-                      // Calculate usage percentage
-                      const usedBytes = metrics?.memory_bytes || 0
-                      const usedGB = usedBytes / (1024 * 1024 * 1024)
-                      const usagePercent = Math.min((usedBytes / planMemoryBytes) * 100, 100)
-
-                      // Determine color based on usage
-                      const getBarColor = () => {
-                        if (usagePercent >= 90) return 'from-red-500 to-rose-500'
-                        if (usagePercent >= 70) return 'from-amber-500 to-yellow-500'
-                        return 'from-cyan-500 to-blue-500'
-                      }
-
-                      const getTextColor = () => {
-                        if (usagePercent >= 90) return 'text-red-400'
-                        if (usagePercent >= 70) return 'text-amber-400'
-                        return 'text-cyan-400'
-                      }
-
-                      return (
-                        <div className="p-4 bg-slate-800/50 rounded-lg space-y-3">
-                          <div className="flex items-center justify-between">
-                            <span className="text-slate-300 font-medium">RAM Usage</span>
-                            <span className={`font-mono text-sm font-semibold ${getTextColor()}`}>
-                              {metrics ? `${usedGB.toFixed(1)} GB / ${planMemoryGB} GB` : 'Loading...'}
-                            </span>
-                          </div>
-
-                          {/* Progress Bar */}
-                          <div className="relative">
-                            <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
-                              <div
-                                className={`h-full bg-gradient-to-r ${getBarColor()} transition-all duration-500 ease-out`}
-                                style={{ width: `${metrics ? usagePercent : 0}%` }}
-                              />
-                            </div>
-                            {/* Percentage label */}
-                            <div className="flex justify-between mt-1">
-                              <span className="text-xs text-slate-500">0 GB</span>
-                              <span className={`text-xs font-medium ${getTextColor()}`}>
-                                {metrics ? `${usagePercent.toFixed(0)}%` : '—'}
-                              </span>
-                              <span className="text-xs text-slate-500">{planMemoryGB} GB</span>
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })()
-                  )}
-
-                  {/* Start/Stop Buttons */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      onClick={startServer}
-                      disabled={loading}
-                      className="py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                    >
-                      {loading ? (
-                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                      ) : (
-                        <>
-                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M8 5v14l11-7z" />
-                          </svg>
-                          Start
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      onClick={stopServer}
-                      disabled={loading}
-                      className="py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-red-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                    >
-                      {loading ? (
-                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                      ) : (
-                        <>
-                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M6 6h12v12H6z" />
-                          </svg>
-                          Stop
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Server Logs Button */}
-                  {!showLogs && (
-                    <button
-                      onClick={fetchPodsAndConnect}
-                      className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 font-semibold shadow-lg transition-all duration-200 transform hover:scale-[1.02] flex items-center justify-center gap-2"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
-                      View Server Logs
-                    </button>
-                  )}
-
-                  {/* Delete Button */}
-                  <button
-                    onClick={deleteServer}
-                    disabled={loading}
-                    className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-red-900/50 border border-slate-700 hover:border-red-500/50 disabled:bg-slate-800 disabled:cursor-not-allowed text-slate-400 hover:text-red-400 text-sm font-medium transition-all duration-200 flex items-center justify-center gap-2"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                    Delete Server
-                  </button>
-                </div>
+              {activeTab === 'monitoring' && server.result && (
+                <MonitoringTab
+                  result={server.result}
+                  billingStatus={billing.billingStatus}
+                  metrics={metricsHook.metrics}
+                  loading={server.loading}
+                  showLogs={logsHook.showLogs}
+                  onStartServer={server.startServer}
+                  onStopServer={server.stopServer}
+                  onDeleteServer={server.deleteServer}
+                  onViewLogs={logsHook.fetchPodsAndConnect}
+                />
               )}
 
-              {/* Operations Tab */}
-              {activeTab === 'operations' && result && (
-                <div className="space-y-4 mb-4">
-                  {/* OP Player Section - only when server is running */}
-                  {result.status === 'ready' && (
-                    <div className="p-3 bg-slate-800/50 rounded-lg">
-                      <span className="text-slate-400 text-sm block mb-2">Give Operator Permissions</span>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={opPlayerName}
-                          onChange={(e) => setOpPlayerName(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && opPlayer()}
-                          placeholder="Player name"
-                          className="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 text-sm focus:outline-none focus:border-indigo-500"
-                          disabled={opLoading}
-                        />
-                        <button
-                          onClick={opPlayer}
-                          disabled={opLoading || !opPlayerName.trim()}
-                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                        >
-                          {opLoading ? (
-                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                            </svg>
-                          ) : 'OP'}
-                        </button>
-                      </div>
-                      {opMessage && (
-                        <p className={`mt-2 text-sm ${opMessage.includes('Successfully') ? 'text-green-400' : 'text-red-400'}`}>
-                          {opMessage}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Console - only when server is running */}
-                  {result.status === 'ready' && (
-                    <div className="p-4 bg-slate-800/50 rounded-lg">
-                      <div className="flex items-center gap-2 mb-3">
-                        <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                        </svg>
-                        <span className="text-white font-medium">Server Console</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <div className="flex-1 relative">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-mono">/</span>
-                          <input
-                            type="text"
-                            value={consoleCommand}
-                            onChange={(e) => setConsoleCommand(e.target.value)}
-                            onKeyDown={handleConsoleKeyDown}
-                            placeholder="say Hello World"
-                            className="w-full pl-7 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 font-mono text-sm focus:outline-none focus:border-green-500"
-                            disabled={consoleLoading}
-                          />
-                        </div>
-                        <button
-                          onClick={executeConsoleCommand}
-                          disabled={consoleLoading || !consoleCommand.trim()}
-                          className="px-4 py-2 bg-green-600 hover:bg-green-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                        >
-                          {consoleLoading ? (
-                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                            </svg>
-                          ) : (
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-                            </svg>
-                          )}
-                          Send
-                        </button>
-                      </div>
-                      {consoleOutput && (
-                        <div className={`mt-3 p-2 rounded-lg font-mono text-sm ${
-                          consoleOutput.type === 'success' ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'
-                        }`}>
-                          {consoleOutput.text}
-                        </div>
-                      )}
-                      <p className="mt-2 text-xs text-slate-500">
-                        Press Enter to send. Use Arrow Up/Down for command history.
-                      </p>
-                    </div>
-                  )}
-
-                  {/* World Upload Section */}
-                  <div className="p-4 bg-slate-800/50 rounded-lg">
-                    <div className="flex items-center gap-2 mb-2">
-                      <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <span className="text-white font-medium">Upload World Save</span>
-                    </div>
-                    <p className="text-slate-400 text-sm mb-3">
-                      Upload a .zip file containing your Minecraft world save. This will replace the current world data.
-                    </p>
-
-                    {result.status === 'stopped' ? (
-                      <>
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          accept=".zip"
-                          onChange={handleFileSelect}
-                          className="hidden"
-                          disabled={uploadLoading}
-                        />
-                        <button
-                          onClick={() => fileInputRef.current?.click()}
-                          disabled={uploadLoading}
-                          className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-amber-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                        >
-                          {uploadLoading ? (
-                            <>
-                              <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                              </svg>
-                              Uploading...
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                              </svg>
-                              Select World File (.zip)
-                            </>
-                          )}
-                        </button>
-                        <p className="text-slate-500 text-xs mt-2 text-center">Maximum file size: 500MB</p>
-                      </>
-                    ) : (
-                      <div className="py-3 px-4 bg-slate-900/50 rounded-lg text-center">
-                        <svg className="w-6 h-6 text-slate-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                        </svg>
-                        <p className="text-slate-400 text-sm">Stop the server to upload a world</p>
-                      </div>
-                    )}
-
-                    {/* Upload Message */}
-                    {uploadMessage && (
-                      <div className={`mt-3 p-3 rounded-lg flex items-start gap-2 ${
-                        uploadMessage.type === 'success'
-                          ? 'bg-green-500/10 border border-green-500/30'
-                          : 'bg-red-500/10 border border-red-500/30'
-                      }`}>
-                        {uploadMessage.type === 'success' ? (
-                          <svg className="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        ) : (
-                          <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        )}
-                        <p className={`text-sm ${uploadMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-                          {uploadMessage.text}
-                        </p>
-                        <button
-                          onClick={() => setUploadMessage(null)}
-                          className={`ml-auto ${uploadMessage.type === 'success' ? 'text-green-400 hover:text-green-300' : 'text-red-400 hover:text-red-300'}`}
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
+              {activeTab === 'operations' && server.result && (
+                <OperationsTab
+                  result={server.result}
+                  opPlayerName={operations.opPlayerName}
+                  opLoading={operations.opLoading}
+                  opMessage={operations.opMessage}
+                  consoleCommand={consoleHook.consoleCommand}
+                  consoleLoading={consoleHook.consoleLoading}
+                  consoleOutput={consoleHook.consoleOutput}
+                  uploadLoading={operations.uploadLoading}
+                  uploadMessage={operations.uploadMessage}
+                  fileInputRef={operations.fileInputRef}
+                  onOpPlayerNameChange={operations.setOpPlayerName}
+                  onOpPlayer={operations.opPlayer}
+                  onConsoleCommandChange={consoleHook.setConsoleCommand}
+                  onConsoleKeyDown={consoleHook.handleConsoleKeyDown}
+                  onExecuteConsole={consoleHook.executeConsoleCommand}
+                  onFileSelect={operations.handleFileSelect}
+                  onUploadClick={() => operations.fileInputRef.current?.click()}
+                  onClearUploadMessage={() => operations.setUploadMessage(null)}
+                />
               )}
 
-              {/* Plugins Tab */}
-              {activeTab === 'plugins' && result && (
-                <div className="space-y-3 mb-4">
-                  <p className="text-slate-400 text-sm mb-3">
-                    Install popular plugins on your server. Restart required after changes.
-                  </p>
-                  {availablePlugins.map((plugin) => {
-                    const installed = isPluginInstalled(plugin.id)
-                    const isLoading = pluginLoading === plugin.id
-                    return (
-                      <div key={plugin.id} className="p-3 bg-slate-800/50 rounded-lg flex items-center justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-white">{plugin.name}</span>
-                            {installed && (
-                              <span className="px-2 py-0.5 text-xs bg-green-500/20 text-green-400 rounded-full">
-                                Installed
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-slate-400 text-sm truncate">{plugin.description}</p>
-                        </div>
-                        <button
-                          onClick={() => installed ? uninstallPlugin(plugin.id) : installPlugin(plugin.id)}
-                          disabled={isLoading}
-                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex-shrink-0 ${
-                            installed
-                              ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30'
-                              : 'bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 border border-indigo-500/30'
-                          } disabled:opacity-50 disabled:cursor-not-allowed`}
-                        >
-                          {isLoading ? (
-                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                            </svg>
-                          ) : installed ? 'Remove' : 'Install'}
-                        </button>
-                      </div>
-                    )
-                  })}
-                  {availablePlugins.length === 0 && (
-                    <div className="text-center py-8 text-slate-500">
-                      Loading plugins...
-                    </div>
-                  )}
-                </div>
+              {activeTab === 'plugins' && server.result && (
+                <PluginsTab
+                  availablePlugins={plugins.availablePlugins}
+                  pluginLoading={plugins.pluginLoading}
+                  isPluginInstalled={plugins.isPluginInstalled}
+                  onInstallPlugin={plugins.installPlugin}
+                  onUninstallPlugin={plugins.uninstallPlugin}
+                />
               )}
 
-              {/* Billing Tab */}
               {activeTab === 'billing' && (
-                <div className="space-y-4 mb-4">
-                  {/* Current Plan Status */}
-                  <div className="p-4 bg-slate-800/50 rounded-lg">
-                    <div className="flex items-center gap-2 mb-3">
-                      <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                      </svg>
-                      <span className="text-white font-medium">Subscription Status</span>
-                    </div>
-
-                    {billingStatus ? (
-                      <div className="space-y-3">
-                        {/* Status Badge and Current Plan */}
-                        <div className="flex items-center justify-between">
-                          <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                            billingStatus.subscription_status === 'active'
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                              : billingStatus.subscription_status === 'trialing'
-                              ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                              : billingStatus.subscription_status === 'past_due'
-                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                              : billingStatus.subscription_status === 'canceled'
-                              ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                              : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
-                          }`}>
-                            {billingStatus.subscription_status === 'active' && 'Active Subscription'}
-                            {billingStatus.subscription_status === 'trialing' && 'Free Trial'}
-                            {billingStatus.subscription_status === 'past_due' && 'Payment Due'}
-                            {billingStatus.subscription_status === 'canceled' && 'Canceled'}
-                            {billingStatus.subscription_status === 'none' && 'No Subscription'}
-                          </span>
-                          {billingStatus.memory && (
-                            <span className="px-3 py-1 rounded-full text-sm font-medium bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
-                              {billingStatus.memory} RAM
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Trial Countdown */}
-                        {billingStatus.subscription_status === 'trialing' && billingStatus.trial_ends_at && (
-                          <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                            <p className="text-blue-200 text-sm">
-                              Your 48-hour trial {billingStatus.is_trial_expired ? 'has ended' : 'ends'} on{' '}
-                              <span className="font-medium">
-                                {new Date(billingStatus.trial_ends_at).toLocaleString()}
-                              </span>
-                            </p>
-                            {!billingStatus.is_trial_expired && (
-                              <p className="text-blue-300 text-xs mt-1">
-                                Subscribe now to continue using your server after the trial.
-                              </p>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Trial Expired Warning */}
-                        {billingStatus.is_trial_expired && billingStatus.subscription_status !== 'active' && (
-                          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-                            <p className="text-red-200 text-sm font-medium">
-                              Your trial has expired. Subscribe to continue using your server.
-                            </p>
-                          </div>
-                        )}
-
-                        {/* Upgrade Success Message */}
-                        {upgradeSuccess && (
-                          <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-start gap-2">
-                            <svg className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                            <p className="text-emerald-200 text-sm">{upgradeSuccess}</p>
-                          </div>
-                        )}
-
-                        {/* Past Due Warning */}
-                        {billingStatus.subscription_status === 'past_due' && (
-                          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-                            <p className="text-amber-200 text-sm">
-                              Your payment has failed. Please update your payment method to avoid service interruption.
-                            </p>
-                          </div>
-                        )}
-
-                        {/* Plan Selection for new subscribers */}
-                        {(billingStatus.subscription_status === 'none' ||
-                          billingStatus.subscription_status === 'trialing' ||
-                          billingStatus.subscription_status === 'canceled' ||
-                          billingStatus.is_trial_expired) && (
-                          <div className="mt-4">
-                            <label className="text-slate-300 text-sm font-medium block mb-2">Select a Plan</label>
-                            <div className="grid grid-cols-2 gap-2">
-                              {availablePlans.map((plan) => (
-                                <button
-                                  key={plan.plan_id}
-                                  onClick={() => setSelectedPlan(plan.plan_id)}
-                                  className={`p-3 rounded-lg border text-left transition-all ${
-                                    selectedPlan === plan.plan_id
-                                      ? 'border-emerald-500 bg-emerald-500/10'
-                                      : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
-                                  }`}
-                                >
-                                  <span className={`font-semibold block ${
-                                    selectedPlan === plan.plan_id ? 'text-emerald-400' : 'text-white'
-                                  }`}>
-                                    {plan.display_name}
-                                  </span>
-                                  <span className={`text-sm ${
-                                    selectedPlan === plan.plan_id ? 'text-emerald-400/70' : 'text-slate-400'
-                                  }`}>
-                                    {plan.price}/mo
-                                  </span>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Action Buttons */}
-                        <div className="flex gap-3 mt-4">
-                          {(billingStatus.subscription_status === 'none' ||
-                            billingStatus.subscription_status === 'trialing' ||
-                            billingStatus.subscription_status === 'canceled' ||
-                            billingStatus.is_trial_expired) && (
-                            <button
-                              onClick={() => handleSubscribe(selectedPlan)}
-                              disabled={billingLoading}
-                              className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                            >
-                              {billingLoading ? (
-                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                                </svg>
-                              ) : (
-                                <>
-                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                                  </svg>
-                                  Subscribe to {availablePlans.find(p => p.plan_id === selectedPlan)?.display_name}
-                                </>
-                              )}
-                            </button>
-                          )}
-
-                          {(billingStatus.subscription_status === 'active' ||
-                            billingStatus.subscription_status === 'past_due') && (
-                            <button
-                              onClick={handleManageSubscription}
-                              disabled={billingLoading}
-                              className="flex-1 py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed font-semibold shadow-lg transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none border border-slate-600 flex items-center justify-center gap-2"
-                            >
-                              {billingLoading ? (
-                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                                </svg>
-                              ) : (
-                                <>
-                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                  </svg>
-                                  Manage Subscription
-                                </>
-                              )}
-                            </button>
-                          )}
-
-                          {/* Upgrade Button - only show for active subscriptions with upgrade available */}
-                          {billingStatus.subscription_status === 'active' && getNextPlan(billingStatus.plan_id) && (
-                            <button
-                              onClick={() => setShowUpgradeModal(true)}
-                              disabled={billingLoading}
-                              className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                            >
-                              {billingLoading ? (
-                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                                </svg>
-                              ) : (
-                                <>
-                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                                  </svg>
-                                  Upgrade to {getNextPlan(billingStatus.plan_id)?.display_name} ({getNextPlan(billingStatus.plan_id)?.price}/mo)
-                                </>
-                              )}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-center py-4">
-                        <svg className="animate-spin h-6 w-6 text-slate-400 mx-auto mb-2" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                        <p className="text-slate-400">Loading billing status...</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Payment Info */}
-                  <div className="p-4 bg-slate-800/30 rounded-lg border border-slate-700">
-                    <p className="text-slate-400 text-sm">
-                      Payments are processed securely by Stripe. You can upgrade, downgrade, or cancel your subscription at any time
-                      from the Manage Subscription page.
-                    </p>
-                  </div>
-                </div>
+                <BillingTab
+                  billingStatus={billing.billingStatus}
+                  billingLoading={billing.billingLoading}
+                  selectedPlan={billing.selectedPlan}
+                  upgradeSuccess={billing.upgradeSuccess}
+                  onSelectPlan={billing.setSelectedPlan}
+                  onSubscribe={billing.handleSubscribe}
+                  onManageSubscription={billing.handleManageSubscription}
+                  onShowUpgradeModal={() => billing.setShowUpgradeModal(true)}
+                  getNextPlan={billing.getNextPlan}
+                />
               )}
 
-              {/* Admin Tab */}
               {activeTab === 'admin' && isAdmin(user) && (
-                <div className="space-y-4 mb-4">
-                  <div className="flex items-center gap-2 mb-4">
-                    <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                    </svg>
-                    <span className="text-amber-400 font-medium">Admin Panel</span>
-                  </div>
-
-                  {/* Cluster RAM Stats */}
-                  <div className="p-4 bg-slate-800/50 rounded-lg">
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-white font-medium">Cluster Resources</h4>
-                      <button
-                        onClick={fetchClusterStats}
-                        disabled={clusterStatsLoading}
-                        className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 rounded text-slate-300 transition-colors"
-                      >
-                        {clusterStatsLoading ? 'Loading...' : 'Refresh'}
-                      </button>
-                    </div>
-                    {clusterStats ? (
-                      <div className="space-y-3">
-                        {/* RAM Progress Bar */}
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-slate-400">RAM Allocated</span>
-                            <span className="text-white">{clusterStats.total_allocated_gb} GB / {clusterStats.cluster_capacity_gb} GB</span>
-                          </div>
-                          <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full transition-all duration-500 ${
-                                clusterStats.usage_percent >= 90
-                                  ? 'bg-rose-500'
-                                  : clusterStats.usage_percent >= 70
-                                  ? 'bg-amber-500'
-                                  : 'bg-emerald-500'
-                              }`}
-                              style={{ width: `${Math.min(clusterStats.usage_percent, 100)}%` }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Stats Grid */}
-                        <div className="grid grid-cols-2 gap-3 pt-2">
-                          <div className="p-3 bg-slate-900/50 rounded-lg">
-                            <p className="text-slate-400 text-xs mb-1">Remaining Capacity</p>
-                            <p className={`text-lg font-semibold ${
-                              clusterStats.remaining_gb <= 8 ? 'text-rose-400' : 'text-emerald-400'
-                            }`}>
-                              {clusterStats.remaining_gb} GB
-                            </p>
-                          </div>
-                          <div className="p-3 bg-slate-900/50 rounded-lg">
-                            <p className="text-slate-400 text-xs mb-1">Active Servers</p>
-                            <p className="text-lg font-semibold text-cyan-400">{clusterStats.active_servers}</p>
-                          </div>
-                          <div className="p-3 bg-slate-900/50 rounded-lg">
-                            <p className="text-slate-400 text-xs mb-1">Currently Used</p>
-                            <p className="text-lg font-semibold text-slate-300">{clusterStats.total_used_gb} GB</p>
-                          </div>
-                          <div className="p-3 bg-slate-900/50 rounded-lg">
-                            <p className="text-slate-400 text-xs mb-1">Usage</p>
-                            <p className={`text-lg font-semibold ${
-                              clusterStats.usage_percent >= 90
-                                ? 'text-rose-400'
-                                : clusterStats.usage_percent >= 70
-                                ? 'text-amber-400'
-                                : 'text-emerald-400'
-                            }`}>
-                              {clusterStats.usage_percent}%
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ) : clusterStatsLoading ? (
-                      <div className="flex items-center justify-center py-4">
-                        <svg className="animate-spin h-5 w-5 text-slate-400 mr-2" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                        <span className="text-slate-400 text-sm">Loading cluster stats...</span>
-                      </div>
-                    ) : (
-                      <p className="text-slate-500 text-sm text-center py-2">
-                        Failed to load cluster stats
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Current Impersonation Status */}
-                  {impersonating && (
-                    <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-amber-200 text-sm font-medium">Currently Impersonating</p>
-                          <p className="text-amber-100">{impersonating.email || impersonating.userId}</p>
-                        </div>
-                        <button
-                          onClick={stopImpersonation}
-                          className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 rounded-lg text-amber-200 text-sm font-medium transition-colors"
-                        >
-                          Exit
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* User Search */}
-                  <div className="p-4 bg-slate-800/50 rounded-lg">
-                    <h4 className="text-white font-medium mb-3">User Impersonation</h4>
-                    <p className="text-slate-400 text-sm mb-3">
-                      Search for a user to impersonate and view their server as them.
-                    </p>
-
-                    <div className="flex gap-2 mb-4">
-                      <input
-                        type="text"
-                        value={userSearchQuery}
-                        onChange={(e) => setUserSearchQuery(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && searchUsers(userSearchQuery)}
-                        placeholder="Search by email or name..."
-                        className="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 text-sm focus:outline-none focus:border-amber-500"
-                      />
-                      <button
-                        onClick={() => searchUsers(userSearchQuery)}
-                        disabled={usersLoading}
-                        className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
-                      >
-                        {usersLoading ? 'Loading...' : 'Search'}
-                      </button>
-                    </div>
-
-                    <button
-                      onClick={() => searchUsers('')}
-                      disabled={usersLoading}
-                      className="w-full py-2 mb-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
-                    >
-                      {usersLoading ? 'Loading...' : 'Load All Users'}
-                    </button>
-
-                    {/* User List */}
-                    {adminUsers.length > 0 && (
-                      <div className="space-y-2 max-h-64 overflow-y-auto">
-                        <p className="text-slate-500 text-xs mb-2">
-                          Showing {adminUsers.length} of {usersTotal} users
-                        </p>
-                        {adminUsers.map((u) => (
-                          <div
-                            key={u.user_id}
-                            className="p-3 bg-slate-900/50 rounded-lg flex items-center justify-between gap-3"
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              {u.picture && (
-                                <img
-                                  src={u.picture}
-                                  alt=""
-                                  className="w-8 h-8 rounded-full flex-shrink-0"
-                                />
-                              )}
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-white text-sm font-medium truncate">
-                                    {u.name || u.email || u.user_id}
-                                  </span>
-                                  {u.is_admin && (
-                                    <span className="px-2 py-0.5 text-xs bg-amber-500/20 text-amber-400 rounded-full flex-shrink-0">
-                                      Admin
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-slate-400 text-xs truncate">{u.email}</p>
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => startImpersonation(u.user_id)}
-                              disabled={u.is_admin || impersonating?.userId === u.user_id}
-                              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex-shrink-0 ${
-                                u.is_admin
-                                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                                  : impersonating?.userId === u.user_id
-                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                  : 'bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 border border-indigo-500/30'
-                              }`}
-                            >
-                              {impersonating?.userId === u.user_id
-                                ? 'Active'
-                                : u.is_admin
-                                ? 'Admin'
-                                : 'Impersonate'}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {adminUsers.length === 0 && !usersLoading && (
-                      <p className="text-slate-500 text-sm text-center py-4">
-                        Click "Load All Users" or search to see users
-                      </p>
-                    )}
-                  </div>
-                </div>
+                <AdminTab
+                  impersonating={admin.impersonating}
+                  clusterStats={admin.clusterStats}
+                  clusterStatsLoading={admin.clusterStatsLoading}
+                  adminUsers={admin.adminUsers}
+                  userSearchQuery={admin.userSearchQuery}
+                  usersLoading={admin.usersLoading}
+                  usersTotal={admin.usersTotal}
+                  onFetchClusterStats={admin.fetchClusterStats}
+                  onUserSearchQueryChange={admin.setUserSearchQuery}
+                  onSearchUsers={admin.searchUsers}
+                  onStartImpersonation={admin.startImpersonation}
+                  onStopImpersonation={admin.stopImpersonation}
+                />
               )}
-
             </div>
           )}
 
-          {/* Payment Required Modal */}
-          {showPaymentModal && (
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-slate-900 rounded-2xl shadow-2xl border border-slate-700 max-w-md w-full p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 bg-amber-500/20 rounded-xl flex items-center justify-center">
-                    <svg className="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-white">Subscription Required</h3>
-                    <p className="text-slate-400 text-sm">Your trial has expired</p>
-                  </div>
-                </div>
-
-                <p className="text-slate-300 mb-4">
-                  {paymentError || 'Your 48-hour trial has ended. Subscribe now to continue using your Minecraft server.'}
-                </p>
-
-                {/* Plan Selection */}
-                <div className="mb-4">
-                  <label className="text-slate-300 text-sm font-medium block mb-2">Select a Plan</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {availablePlans.map((plan) => (
-                      <button
-                        key={plan.plan_id}
-                        onClick={() => setSelectedPlan(plan.plan_id)}
-                        className={`p-3 rounded-lg border text-left transition-all ${
-                          selectedPlan === plan.plan_id
-                            ? 'border-emerald-500 bg-emerald-500/10'
-                            : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
-                        }`}
-                      >
-                        <span className={`font-semibold block ${
-                          selectedPlan === plan.plan_id ? 'text-emerald-400' : 'text-white'
-                        }`}>
-                          {plan.display_name}
-                        </span>
-                        <span className={`text-sm ${
-                          selectedPlan === plan.plan_id ? 'text-emerald-400/70' : 'text-slate-400'
-                        }`}>
-                          {plan.price}/mo
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <button
-                    onClick={() => {
-                      setShowPaymentModal(false)
-                      handleSubscribe(selectedPlan)
-                    }}
-                    disabled={billingLoading}
-                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                  >
-                    {billingLoading ? (
-                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                    ) : (
-                      <>
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                        </svg>
-                        Subscribe to {availablePlans.find(p => p.plan_id === selectedPlan)?.display_name}
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setShowPaymentModal(false)
-                      setPaymentError(null)
-                    }}
-                    className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
+          {/* Modals */}
+          {billing.showPaymentModal && (
+            <PaymentModal
+              paymentError={billing.paymentError}
+              selectedPlan={billing.selectedPlan}
+              billingLoading={billing.billingLoading}
+              onSelectPlan={billing.setSelectedPlan}
+              onSubscribe={billing.handleSubscribe}
+              onClose={() => {
+                billing.setShowPaymentModal(false)
+                billing.setPaymentError(null)
+              }}
+            />
           )}
 
-          {/* Capacity Limit Modal */}
-          {showCapacityModal && (
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-slate-900 rounded-2xl shadow-2xl border border-slate-700 max-w-md w-full p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 bg-rose-500/20 rounded-xl flex items-center justify-center">
-                    <svg className="w-6 h-6 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-white">We're at Capacity</h3>
-                    <p className="text-slate-400 text-sm">High demand right now</p>
-                  </div>
-                </div>
-
-                <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl mb-4">
-                  <p className="text-rose-200 text-sm">
-                    Our servers are currently running at full capacity. We're working hard to add more resources.
-                  </p>
-                </div>
-
-                <p className="text-slate-300 mb-6">
-                  Please try again later. We appreciate your patience and apologize for any inconvenience.
-                </p>
-
-                <button
-                  onClick={() => setShowCapacityModal(false)}
-                  className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium transition-colors"
-                >
-                  Got it
-                </button>
-              </div>
-            </div>
+          {billing.showCapacityModal && (
+            <CapacityModal onClose={() => billing.setShowCapacityModal(false)} />
           )}
 
-          {/* Upgrade Confirmation Modal */}
-          {showUpgradeModal && billingStatus && (
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-slate-900 rounded-2xl shadow-2xl border border-slate-700 max-w-md w-full p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center">
-                    <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-white">Confirm Upgrade</h3>
-                    <p className="text-slate-400 text-sm">Upgrade your server RAM</p>
-                  </div>
-                </div>
-
-                {/* Plan Comparison */}
-                <div className="flex items-center gap-3 mb-6">
-                  {/* Current Plan */}
-                  <div className="flex-1 p-4 bg-slate-800/50 rounded-xl border border-slate-700">
-                    <p className="text-slate-400 text-xs uppercase tracking-wide mb-1">Current Plan</p>
-                    <p className="text-white font-semibold text-lg">{getCurrentPlan(billingStatus.plan_id)?.display_name}</p>
-                    <p className="text-slate-400 text-sm">{getCurrentPlan(billingStatus.plan_id)?.price}/mo</p>
-                  </div>
-
-                  {/* Arrow */}
-                  <div className="flex-shrink-0">
-                    <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                    </svg>
-                  </div>
-
-                  {/* New Plan */}
-                  <div className="flex-1 p-4 bg-indigo-500/10 rounded-xl border border-indigo-500/30">
-                    <p className="text-indigo-400 text-xs uppercase tracking-wide mb-1">New Plan</p>
-                    <p className="text-white font-semibold text-lg">{getNextPlan(billingStatus.plan_id)?.display_name}</p>
-                    <p className="text-indigo-400 text-sm">{getNextPlan(billingStatus.plan_id)?.price}/mo</p>
-                  </div>
-                </div>
-
-                <p className="text-slate-400 text-sm mb-6">
-                  You will be charged the prorated difference for the remainder of your billing period. Restart your server after upgrading to apply the new RAM allocation.
-                </p>
-
-                <div className="space-y-3">
-                  <button
-                    onClick={() => {
-                      setShowUpgradeModal(false)
-                      handleUpgrade()
-                    }}
-                    disabled={billingLoading}
-                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
-                  >
-                    {billingLoading ? (
-                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                    ) : (
-                      <>
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                        Confirm Upgrade
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    onClick={() => setShowUpgradeModal(false)}
-                    className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
+          {billing.showUpgradeModal && billing.billingStatus && (
+            <UpgradeModal
+              billingStatus={billing.billingStatus}
+              billingLoading={billing.billingLoading}
+              getCurrentPlan={billing.getCurrentPlan}
+              getNextPlan={billing.getNextPlan}
+              onUpgrade={billing.handleUpgrade}
+              onClose={() => billing.setShowUpgradeModal(false)}
+            />
           )}
 
           {/* Logs Section */}
-          {showLogs && (
-            <div className="border-t border-slate-800 bg-slate-950/50 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <h3 className="text-lg font-semibold">Server Logs</h3>
-                  {wsConnected ? (
-                    <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-green-500/20 text-green-400 border border-green-500/30">
-                      <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-                      <span className="text-xs font-medium">Live</span>
-                    </span>
-                  ) : (
-                    <>
-                      <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/20 text-red-400 border border-red-500/30">
-                        <span className="w-2 h-2 bg-red-400 rounded-full"></span>
-                        <span className="text-xs font-medium">Disconnected</span>
-                      </span>
-                      <button
-                        onClick={fetchPodsAndConnect}
-                        className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors flex items-center gap-1.5"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                        Retry
-                      </button>
-                    </>
-                  )}
-                </div>
-                <button
-                  onClick={disconnectLogs}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm transition-colors flex items-center gap-2"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                  Close
-                </button>
-              </div>
-
-              <div className="bg-black/50 rounded-xl border border-slate-800 p-4 h-96 overflow-y-auto font-mono text-xs shadow-inner">
-                {logs.length === 0 ? (
-                  <div className="flex items-center justify-center h-full">
-                    <div className="text-center">
-                      <svg className="w-8 h-8 text-slate-600 mx-auto mb-2 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <p className="text-slate-500">Waiting for logs...</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-0.5">
-                    {logs.map((log, idx) => (
-                      <div
-                        key={idx}
-                        className="text-emerald-400/90 whitespace-pre-wrap break-all leading-relaxed hover:bg-slate-900/30 px-2 py-0.5 rounded transition-colors"
-                      >
-                        {log}
-                      </div>
-                    ))}
-                    <div ref={logsEndRef} />
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span>Logs update in real-time • {logs.length} line{logs.length !== 1 ? 's' : ''}</span>
-              </div>
-            </div>
+          {logsHook.showLogs && (
+            <LogViewer
+              logs={logsHook.logs}
+              wsConnected={logsHook.wsConnected}
+              logsEndRef={logsHook.logsEndRef}
+              onDisconnect={logsHook.disconnectLogs}
+              onRetry={logsHook.fetchPodsAndConnect}
+            />
           )}
         </div>
 
         {/* Footer */}
-        <div className="text-center mt-6 text-sm text-slate-500">
-        </div>
+        <div className="text-center mt-6 text-sm text-slate-500"></div>
       </div>
     </main>
+  )
+}
+
+// Tab Button Component
+function TabButton({
+  active,
+  onClick,
+  color,
+  children
+}: {
+  active: boolean
+  onClick: () => void
+  color: 'indigo' | 'emerald' | 'amber'
+  children: React.ReactNode
+}) {
+  const colorClasses = {
+    indigo: active ? 'text-indigo-400' : 'text-slate-400 hover:text-white',
+    emerald: active ? 'text-emerald-400' : 'text-slate-400 hover:text-white',
+    amber: active ? 'text-amber-400' : 'text-slate-400 hover:text-white',
+  }
+
+  const underlineColors = {
+    indigo: 'bg-indigo-400',
+    emerald: 'bg-emerald-400',
+    amber: 'bg-amber-400',
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      className={`px-4 py-2 text-sm font-medium transition-colors relative ${colorClasses[color]}`}
+    >
+      {children}
+      {active && <div className={`absolute bottom-0 left-0 right-0 h-0.5 ${underlineColors[color]}`} />}
+    </button>
   )
 }

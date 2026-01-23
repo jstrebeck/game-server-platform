@@ -1,0 +1,6 @@
+export { DetailsTab } from './DetailsTab'
+export { MonitoringTab } from './MonitoringTab'
+export { OperationsTab } from './OperationsTab'
+export { PluginsTab } from './PluginsTab'
+export { BillingTab } from './BillingTab'
+export { AdminTab } from './AdminTab'
