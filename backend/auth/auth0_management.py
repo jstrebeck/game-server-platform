@@ -14,6 +14,7 @@ _token_cache = {
 }
 
 AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN", "")
+AUTH0_MGMT_DOMAIN = os.getenv("AUTH0_MGMT_DOMAIN", AUTH0_DOMAIN)  # Tenant domain for Management API
 AUTH0_MGMT_CLIENT_ID = os.getenv("AUTH0_MGMT_CLIENT_ID", "")
 AUTH0_MGMT_CLIENT_SECRET = os.getenv("AUTH0_MGMT_CLIENT_SECRET", "")
 
@@ -35,12 +36,12 @@ def get_management_token() -> str:
             "Set AUTH0_MGMT_CLIENT_ID and AUTH0_MGMT_CLIENT_SECRET environment variables."
         )
 
-    # Request a new token
-    token_url = f"https://{AUTH0_DOMAIN}/oauth/token"
+    # Request a new token (must use tenant domain, not custom domain)
+    token_url = f"https://{AUTH0_MGMT_DOMAIN}/oauth/token"
     payload = {
         "client_id": AUTH0_MGMT_CLIENT_ID,
         "client_secret": AUTH0_MGMT_CLIENT_SECRET,
-        "audience": f"https://{AUTH0_DOMAIN}/api/v2/",
+        "audience": f"https://{AUTH0_MGMT_DOMAIN}/api/v2/",
         "grant_type": "client_credentials"
     }
 
@@ -87,7 +88,7 @@ def list_users(search: str = "", page: int = 0, per_page: int = 50) -> dict:
         params["q"] = f'email:*{search}* OR name:*{search}*'
         params["search_engine"] = "v3"
 
-    url = f"https://{AUTH0_DOMAIN}/api/v2/users"
+    url = f"https://{AUTH0_MGMT_DOMAIN}/api/v2/users"
 
     with httpx.Client(timeout=10.0) as client:
         response = client.get(
@@ -122,7 +123,7 @@ def get_user_roles(user_id: str) -> list:
     import urllib.parse
     encoded_user_id = urllib.parse.quote(user_id, safe='')
 
-    url = f"https://{AUTH0_DOMAIN}/api/v2/users/{encoded_user_id}/roles"
+    url = f"https://{AUTH0_MGMT_DOMAIN}/api/v2/users/{encoded_user_id}/roles"
 
     with httpx.Client(timeout=10.0) as client:
         response = client.get(
@@ -166,7 +167,7 @@ def get_user_metadata(user_id: str) -> dict:
     import urllib.parse
     encoded_user_id = urllib.parse.quote(user_id, safe='')
 
-    url = f"https://{AUTH0_DOMAIN}/api/v2/users/{encoded_user_id}"
+    url = f"https://{AUTH0_MGMT_DOMAIN}/api/v2/users/{encoded_user_id}"
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -205,7 +206,7 @@ def update_user_metadata(user_id: str, metadata: dict) -> bool:
     import urllib.parse
     encoded_user_id = urllib.parse.quote(user_id, safe='')
 
-    url = f"https://{AUTH0_DOMAIN}/api/v2/users/{encoded_user_id}"
+    url = f"https://{AUTH0_MGMT_DOMAIN}/api/v2/users/{encoded_user_id}"
 
     try:
         with httpx.Client(timeout=10.0) as client:

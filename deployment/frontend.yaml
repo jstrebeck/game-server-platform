@@ -5,8 +5,8 @@ metadata:
   namespace: watch2play
 data:
   APP_BASE_URL: "https://minecrafthosting.gg"
-  AUTH0_DOMAIN: "dev-86acntfmvqywrg0y.us.auth0.com"
-  AUTH0_AUDIENCE: "https://api.watch2play.local"
+  AUTH0_DOMAIN: "auth.minecrafthosting.gg"
+  AUTH0_AUDIENCE: "api.minecrafthosting.gg"
   NEXT_PUBLIC_API_URL: "https://api.minecrafthosting.gg"
 ---
 apiVersion: apps/v1

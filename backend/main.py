@@ -578,6 +578,20 @@ class ConsoleCommand(BaseModel):
 # Blocked commands that should use UI controls instead
 BLOCKED_CONSOLE_COMMANDS = {'stop', 'shutdown', 'restart', 'end', 'quit'}
 
+# Allowed config files for editing (whitelist for security)
+ALLOWED_CONFIG_FILES = {
+    'server.properties': '/data/server.properties',
+    'bukkit.yml': '/data/bukkit.yml',
+    'spigot.yml': '/data/spigot.yml',
+    'paper.yml': '/data/paper.yml',
+    'paper-global.yml': '/data/config/paper-global.yml',
+    'ops.json': '/data/ops.json',
+    'whitelist.json': '/data/whitelist.json',
+}
+
+# Maximum config file size (1MB)
+MAX_CONFIG_FILE_SIZE = 1 * 1024 * 1024
+
 
 @app.post("/gameserver/console")
 def execute_console_command(
@@ -660,6 +674,243 @@ def execute_console_command(
         raise
     except Exception as e:
         logger.error(f"Failed to execute console command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ConfigFileContent(BaseModel):
+    content: str
+
+
+@app.get("/gameserver/config")
+def list_config_files(
+    user_id: str = Depends(get_effective_user_id),
+    current_user: dict = Depends(get_current_user)
+):
+    """List available config files and check which ones exist on the server."""
+    from kubernetes.stream import stream
+
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    try:
+        # Find the minecraft pod
+        pods = v1.list_namespaced_pod(namespace=namespace, label_selector="app=minecraft")
+        if not pods.items:
+            raise HTTPException(status_code=404, detail="No minecraft pod found")
+
+        pod = pods.items[0]
+        pod_name = pod.metadata.name
+
+        # Check if pod is running
+        if pod.status.phase != "Running":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Server is not running (status: {pod.status.phase}). Start the server to edit config files."
+            )
+
+        # Check which files exist
+        existing_files = []
+        for filename, filepath in ALLOWED_CONFIG_FILES.items():
+            try:
+                exec_command = ['test', '-f', filepath, '&&', 'echo', 'exists']
+                result = stream(
+                    v1.connect_get_namespaced_pod_exec,
+                    pod_name,
+                    namespace,
+                    command=['sh', '-c', f'test -f {filepath} && echo exists'],
+                    container='minecraft',
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False
+                )
+                if result.strip() == 'exists':
+                    existing_files.append({'name': filename, 'path': filepath})
+            except Exception:
+                pass  # File doesn't exist or error checking
+
+        logger.info(f"Config files listed for user {current_user.get('sub')}: {[f['name'] for f in existing_files]}")
+
+        return {"files": existing_files}
+
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list config files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gameserver/config/{filename}")
+def read_config_file(
+    filename: str,
+    user_id: str = Depends(get_effective_user_id),
+    current_user: dict = Depends(get_current_user)
+):
+    """Read the contents of a config file."""
+    from kubernetes.stream import stream
+
+    # Security: validate filename against whitelist
+    safe_filename = os.path.basename(filename)
+    if safe_filename not in ALLOWED_CONFIG_FILES:
+        raise HTTPException(status_code=400, detail=f"File '{filename}' is not allowed")
+
+    filepath = ALLOWED_CONFIG_FILES[safe_filename]
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    try:
+        # Find the minecraft pod
+        pods = v1.list_namespaced_pod(namespace=namespace, label_selector="app=minecraft")
+        if not pods.items:
+            raise HTTPException(status_code=404, detail="No minecraft pod found")
+
+        pod = pods.items[0]
+        pod_name = pod.metadata.name
+
+        # Check if pod is running
+        if pod.status.phase != "Running":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Server is not running (status: {pod.status.phase}). Start the server to edit config files."
+            )
+
+        # Read file contents using cat
+        exec_command = ['cat', filepath]
+        result = stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=exec_command,
+            container='minecraft',
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False
+        )
+
+        logger.info(f"Config file '{safe_filename}' read by user {current_user.get('sub')}")
+
+        return {"filename": safe_filename, "content": result}
+
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to read config file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/gameserver/config/{filename}")
+def write_config_file(
+    filename: str,
+    body: ConfigFileContent,
+    user_id: str = Depends(get_effective_user_id),
+    current_user: dict = Depends(get_current_user)
+):
+    """Write contents to a config file."""
+    from kubernetes.stream import stream
+
+    # Security: validate filename against whitelist
+    safe_filename = os.path.basename(filename)
+    if safe_filename not in ALLOWED_CONFIG_FILES:
+        raise HTTPException(status_code=400, detail=f"File '{filename}' is not allowed")
+
+    # Security: check content size
+    if len(body.content) > MAX_CONFIG_FILE_SIZE:
+        raise HTTPException(status_code=400, detail=f"File content too large. Maximum size is {MAX_CONFIG_FILE_SIZE // 1024}KB")
+
+    filepath = ALLOWED_CONFIG_FILES[safe_filename]
+    namespace = f"server-{user_id}"
+
+    try:
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    try:
+        # Find the minecraft pod
+        pods = v1.list_namespaced_pod(namespace=namespace, label_selector="app=minecraft")
+        if not pods.items:
+            raise HTTPException(status_code=404, detail="No minecraft pod found")
+
+        pod = pods.items[0]
+        pod_name = pod.metadata.name
+
+        # Check if pod is running
+        if pod.status.phase != "Running":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Server is not running (status: {pod.status.phase}). Start the server to edit config files."
+            )
+
+        # Ensure parent directory exists
+        parent_dir = os.path.dirname(filepath)
+        if parent_dir and parent_dir != '/data':
+            mkdir_command = ['mkdir', '-p', parent_dir]
+            stream(
+                v1.connect_get_namespaced_pod_exec,
+                pod_name,
+                namespace,
+                command=mkdir_command,
+                container='minecraft',
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False
+            )
+
+        # Write file contents using cat with stdin
+        exec_command = ['sh', '-c', f'cat > {filepath}']
+        resp = stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=exec_command,
+            container='minecraft',
+            stderr=True,
+            stdin=True,
+            stdout=True,
+            tty=False,
+            _preload_content=False
+        )
+
+        # Send the content
+        resp.write_stdin(body.content)
+        resp.close()
+
+        logger.info(f"Config file '{safe_filename}' written by user {current_user.get('sub')} ({len(body.content)} bytes)")
+
+        return {"status": "success", "filename": safe_filename, "message": f"File '{safe_filename}' saved successfully"}
+
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to write config file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -16,6 +16,7 @@ import { usePlugins } from '@/app/hooks/usePlugins'
 import { useConsole } from '@/app/hooks/useConsole'
 import { useOperations } from '@/app/hooks/useOperations'
 import { useAdmin } from '@/app/hooks/useAdmin'
+import { useConfig } from '@/app/hooks/useConfig'
 
 import { DetailsTab, MonitoringTab, OperationsTab, PluginsTab, BillingTab, AdminTab } from '@/app/components/tabs'
 import { LogViewer } from '@/app/components/LogViewer'
@@ -87,6 +88,9 @@ export default function Home() {
 
   // Operations hook
   const operations = useOperations({ fetchWithAuth, getAccessToken })
+
+  // Config hook
+  const configHook = useConfig({ fetchWithAuth })
 
   // Handle payment query params on mount
   useEffect(() => {
@@ -427,6 +431,20 @@ export default function Home() {
                   onFileSelect={operations.handleFileSelect}
                   onUploadClick={() => operations.fileInputRef.current?.click()}
                   onClearUploadMessage={() => operations.setUploadMessage(null)}
+                  configFiles={configHook.files}
+                  configSelectedFile={configHook.selectedFile}
+                  configFileContent={configHook.fileContent}
+                  configLoading={configHook.loading}
+                  configSaving={configHook.saving}
+                  configError={configHook.error}
+                  configSaveMessage={configHook.saveMessage}
+                  configHasUnsavedChanges={configHook.hasUnsavedChanges}
+                  onFetchConfigFiles={configHook.fetchConfigFiles}
+                  onLoadConfigFile={configHook.loadFile}
+                  onSaveConfigFile={configHook.saveFile}
+                  onConfigContentChange={configHook.setFileContent}
+                  onClearConfigSaveMessage={() => configHook.setSaveMessage(null)}
+                  getConfigLanguage={configHook.getLanguageFromFilename}
                 />
               )}
 
