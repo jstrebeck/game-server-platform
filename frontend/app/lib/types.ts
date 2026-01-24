@@ -65,3 +65,8 @@ export interface AdminUser {
   is_admin: boolean
   sanitized_id: string
 }
+
+export interface ConfigFile {
+  name: string
+  path: string
+}

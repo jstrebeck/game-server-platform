@@ -29,7 +29,7 @@ spec:
               name: watch2play-backend-secret
               key: AUTH0_DOMAIN
         - name: AUTH0_AUDIENCE
-          value: "https://api.watch2play.local"
+          value: "api.minecrafthosting.gg"
         - name: AUTH0_ALGORITHMS
           value: "RS256"
         - name: ALLOWED_ORIGINS
