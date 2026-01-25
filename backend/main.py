@@ -1723,6 +1723,165 @@ async def stripe_webhook(
     return {"received": True, "result": result}
 
 
+# ===================================
+# Support Endpoint
+# ===================================
+
+MAILGUN_API_KEY = os.getenv("MAILGUN_API_KEY", "")
+MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN", "")
+MAILGUN_FROM_EMAIL = os.getenv("MAILGUN_FROM_EMAIL", "noreply@infinabyte.com")
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "support@infinabyte.com")
+
+
+class SupportRequest(BaseModel):
+    subject: str
+    message: str
+    user_email: Optional[str] = None
+
+
+@app.post("/support")
+def submit_support_request(
+    request: SupportRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Submit a support request via email using Mailgun."""
+    import httpx
+
+    # Validate input
+    if not request.subject or len(request.subject.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Subject is required")
+    if len(request.subject) > 100:
+        raise HTTPException(status_code=400, detail="Subject too long (max 100 characters)")
+    if not request.message or len(request.message.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Message is required")
+    if len(request.message) > 2000:
+        raise HTTPException(status_code=400, detail="Message too long (max 2000 characters)")
+
+    user_id = current_user.get("sub", "unknown")
+    # Prefer email from request body (from frontend), fallback to token claim
+    user_email = request.user_email or current_user.get("email") or "unknown"
+
+    # Build email content
+    email_subject = f"[Support Request] {request.subject}"
+    email_body = f"""
+New support request from Minecraft Hosting user:
+
+User ID: {user_id}
+User Email: {user_email}
+
+Subject: {request.subject}
+
+Message:
+{request.message}
+
+---
+This is an automated message from the Minecraft Hosting support system.
+"""
+
+    # Check if Mailgun is configured
+    if not MAILGUN_API_KEY or not MAILGUN_DOMAIN:
+        # Log the support request if Mailgun is not configured
+        logger.warning(f"Mailgun not configured. Support request from {user_email}: {request.subject}")
+        logger.info(f"Support message: {request.message}")
+        return {"status": "received", "message": "Support request logged (email not configured)"}
+
+    try:
+        # Send email via Mailgun API
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(
+                f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
+                auth=("api", MAILGUN_API_KEY),
+                data={
+                    "from": f"Minecraft Hosting Support <{MAILGUN_FROM_EMAIL}>",
+                    "to": SUPPORT_EMAIL,
+                    "subject": email_subject,
+                    "text": email_body,
+                    "h:Reply-To": user_email if user_email != "unknown" else MAILGUN_FROM_EMAIL,
+                }
+            )
+            response.raise_for_status()
+
+        logger.info(f"Support email sent from user {user_id} ({user_email}): {request.subject}")
+        return {"status": "sent", "message": "Support request submitted successfully"}
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Mailgun API error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=500, detail="Failed to send email. Please try again later.")
+    except httpx.RequestError as e:
+        logger.error(f"Mailgun request error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send email. Please try again later.")
+    except Exception as e:
+        logger.error(f"Error sending support email: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send email. Please try again later.")
+
+
+# ===================================
+# Terms & Conditions Endpoints
+# ===================================
+
+CURRENT_TERMS_VERSION = "1.0"
+
+
+class TermsStatusResponse(BaseModel):
+    accepted: bool
+    accepted_at: Optional[str] = None
+    version: Optional[str] = None
+
+
+@app.get("/user/terms-status", response_model=TermsStatusResponse)
+def get_terms_status(current_user: dict = Depends(get_current_user)):
+    """Check if the user has accepted the current terms of service."""
+    user_id = current_user.get("sub")
+
+    try:
+        metadata = auth0_management.get_user_metadata(user_id)
+        terms_accepted = metadata.get("terms_accepted", False)
+        terms_version = metadata.get("terms_version")
+
+        # If terms version has changed, user needs to re-accept
+        if terms_accepted and terms_version != CURRENT_TERMS_VERSION:
+            terms_accepted = False
+
+        return TermsStatusResponse(
+            accepted=terms_accepted,
+            accepted_at=metadata.get("terms_accepted_at"),
+            version=terms_version
+        )
+    except Exception as e:
+        logger.error(f"Error getting terms status for user {user_id}: {e}")
+        return TermsStatusResponse(accepted=False)
+
+
+@app.post("/user/accept-terms")
+def accept_terms(current_user: dict = Depends(get_current_user)):
+    """Accept the current terms of service."""
+    from datetime import datetime, timezone
+
+    user_id = current_user.get("sub")
+
+    try:
+        now = datetime.now(timezone.utc)
+        metadata = {
+            "terms_accepted": True,
+            "terms_accepted_at": now.isoformat(),
+            "terms_version": CURRENT_TERMS_VERSION
+        }
+
+        success = auth0_management.update_user_metadata(user_id, metadata)
+
+        if success:
+            logger.info(f"User {user_id} accepted terms version {CURRENT_TERMS_VERSION}")
+            return {"success": True, "version": CURRENT_TERMS_VERSION}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to save terms acceptance")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error accepting terms for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to accept terms")
+
+
 executor = ThreadPoolExecutor(max_workers=5)
 
 

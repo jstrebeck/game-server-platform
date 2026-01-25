@@ -17,10 +17,12 @@ import { useConsole } from '@/app/hooks/useConsole'
 import { useOperations } from '@/app/hooks/useOperations'
 import { useAdmin } from '@/app/hooks/useAdmin'
 import { useConfig } from '@/app/hooks/useConfig'
+import { useSupport } from '@/app/hooks/useSupport'
+import { useTerms } from '@/app/hooks/useTerms'
 
 import { DetailsTab, MonitoringTab, OperationsTab, PluginsTab, BillingTab, AdminTab } from '@/app/components/tabs'
 import { LogViewer } from '@/app/components/LogViewer'
-import { PaymentModal, CapacityModal, UpgradeModal } from '@/app/components/modals'
+import { PaymentModal, CapacityModal, UpgradeModal, SupportModal, TermsModal } from '@/app/components/modals'
 import { LandingPage } from '@/app/components/LandingPage'
 
 type TabType = 'details' | 'monitoring' | 'operations' | 'plugins' | 'billing' | 'admin'
@@ -44,6 +46,9 @@ export default function Home() {
 
   // Auth hook
   const { fetchWithAuth } = useAuth(admin.impersonating)
+
+  // Terms hook
+  const terms = useTerms({ fetchWithAuth, userLoaded: !!user && !authLoading })
 
   // Metrics hook
   const metricsHook = useMetrics({ fetchWithAuth })
@@ -91,6 +96,9 @@ export default function Home() {
 
   // Config hook
   const configHook = useConfig({ fetchWithAuth })
+
+  // Support hook
+  const support = useSupport({ fetchWithAuth })
 
   // Handle payment query params on mount
   useEffect(() => {
@@ -175,9 +183,45 @@ export default function Home() {
     return <LandingPage />
   }
 
+  // Checking terms acceptance status
+  if (terms.checkingTerms) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin h-12 w-12 border-4 border-indigo-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+          <p className="text-slate-400">Loading...</p>
+        </div>
+      </main>
+    )
+  }
+
+  // Show Terms modal if not accepted
+  if (terms.termsAccepted === false) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white">
+        <TermsModal
+          loading={terms.termsLoading}
+          error={terms.termsError}
+          onAccept={terms.acceptTerms}
+        />
+      </main>
+    )
+  }
+
   // Authenticated user view
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white flex items-center justify-center p-4">
+      {/* Support Button - Fixed Top Right */}
+      <button
+        onClick={() => support.setShowSupportModal(true)}
+        className="fixed top-4 right-4 z-40 text-sm text-slate-300 hover:text-white transition-colors px-4 py-2 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 backdrop-blur-sm border border-slate-600 hover:border-slate-500 flex items-center gap-2 shadow-lg"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+        </svg>
+        Support
+      </button>
+
       {/* Impersonation Banner */}
       {admin.impersonating && (
         <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-4 shadow-lg">
@@ -537,6 +581,22 @@ export default function Home() {
         {/* Footer */}
         <div className="text-center mt-6 text-sm text-slate-500"></div>
       </div>
+
+      {/* Support Modal - rendered at root level to avoid overflow clipping */}
+      {support.showSupportModal && (
+        <SupportModal
+          supportLoading={support.supportLoading}
+          supportMessage={support.supportMessage}
+          supportError={support.supportError}
+          userEmail={user?.email as string | undefined}
+          onSubmit={support.submitSupportRequest}
+          onClose={() => {
+            support.setShowSupportModal(false)
+            support.setSupportMessage(null)
+            support.setSupportError(null)
+          }}
+        />
+      )}
     </main>
   )
 }

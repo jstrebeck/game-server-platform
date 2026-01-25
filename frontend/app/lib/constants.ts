@@ -25,10 +25,10 @@ export const MINECRAFT_VERSIONS = [
 ]
 
 export const AVAILABLE_PLANS = [
-  { plan_id: '2gb', display_name: '2 GB RAM', memory: '2G', price: '$4.99' },
-  { plan_id: '4gb', display_name: '4 GB RAM', memory: '4G', price: '$9.99' },
-  { plan_id: '6gb', display_name: '6 GB RAM', memory: '6G', price: '$14.99' },
-  { plan_id: '8gb', display_name: '8 GB RAM', memory: '8G', price: '$19.99' },
+  { plan_id: '2gb', display_name: '5-10 Players', memory: '2G', price: '$4.99', players: '5-10' },
+  { plan_id: '4gb', display_name: '15-25 Players', memory: '4G', price: '$9.99', players: '15-25' },
+  { plan_id: '6gb', display_name: '30-40 Players', memory: '6G', price: '$14.99', players: '30-40' },
+  { plan_id: '8gb', display_name: '50-60 Players', memory: '8G', price: '$19.99', players: '50-60' },
 ]
 
 export type Plan = typeof AVAILABLE_PLANS[number]

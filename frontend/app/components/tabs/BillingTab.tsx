@@ -148,6 +148,11 @@ export function BillingTab({
                       }`}>
                         {plan.display_name}
                       </span>
+                      <span className={`text-xs block ${
+                        isImpersonating ? 'text-slate-500' : selectedPlan === plan.plan_id ? 'text-emerald-400/50' : 'text-slate-500'
+                      }`}>
+                        {plan.memory.replace('G', ' GB RAM')}
+                      </span>
                       <span className={`text-sm ${
                         isImpersonating ? 'text-slate-500' : selectedPlan === plan.plan_id ? 'text-emerald-400/70' : 'text-slate-400'
                       }`}>

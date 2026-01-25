@@ -82,6 +82,27 @@ spec:
           value: "https://minecrafthosting.gg?payment=success"
         - name: STRIPE_CANCEL_URL
           value: "https://minecrafthosting.gg?payment=canceled"
+        # Mailgun Configuration for Support Emails
+        - name: MAILGUN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: MAILGUN_API_KEY
+        - name: MAILGUN_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: MAILGUN_DOMAIN
+        - name: MAILGUN_FROM_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: MAILGUN_FROM_EMAIL
+        - name: SUPPORT_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: watch2play-backend-secret
+              key: SUPPORT_EMAIL
 ---
 apiVersion: v1
 kind: Service

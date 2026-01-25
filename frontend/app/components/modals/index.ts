@@ -1,3 +1,5 @@
 export { PaymentModal } from './PaymentModal'
 export { CapacityModal } from './CapacityModal'
 export { UpgradeModal } from './UpgradeModal'
+export { SupportModal } from './SupportModal'
+export { TermsModal } from './TermsModal'

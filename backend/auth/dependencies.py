@@ -25,10 +25,13 @@ async def get_current_user(
         # Extract roles from custom namespace claim
         roles = payload.get(f"{AUTH0_NAMESPACE}/roles", [])
 
+        # Email can be in standard claim or namespaced claim
+        email = payload.get("email") or payload.get(f"{AUTH0_NAMESPACE}/email")
+
         return {
             "sub": payload.get("sub"),
             "user_id": get_user_id_from_token(payload),
-            "email": payload.get("email"),
+            "email": email,
             "permissions": payload.get("permissions", []),
             "roles": roles,
         }
