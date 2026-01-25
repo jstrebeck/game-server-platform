@@ -1,6 +1,6 @@
 'use client'
 
-import { Impersonation, ClusterStats, AdminUser } from '@/app/lib/types'
+import { Impersonation, ClusterStats, AdminUser, MaintenanceBanner } from '@/app/lib/types'
 
 interface AdminTabProps {
   impersonating: Impersonation | null
@@ -10,11 +10,16 @@ interface AdminTabProps {
   userSearchQuery: string
   usersLoading: boolean
   usersTotal: number
+  maintenanceBanner: MaintenanceBanner | null
+  maintenanceLoading: boolean
+  maintenanceMessage: string
   onFetchClusterStats: () => void
   onUserSearchQueryChange: (query: string) => void
   onSearchUsers: (query: string) => void
   onStartImpersonation: (userId: string) => void
   onStopImpersonation: () => void
+  onMaintenanceMessageChange: (message: string) => void
+  onUpdateMaintenance: (enabled: boolean, message: string) => void
 }
 
 export function AdminTab({
@@ -25,11 +30,16 @@ export function AdminTab({
   userSearchQuery,
   usersLoading,
   usersTotal,
+  maintenanceBanner,
+  maintenanceLoading,
+  maintenanceMessage,
   onFetchClusterStats,
   onUserSearchQueryChange,
   onSearchUsers,
   onStartImpersonation,
   onStopImpersonation,
+  onMaintenanceMessageChange,
+  onUpdateMaintenance,
 }: AdminTabProps) {
   return (
     <div className="space-y-4 mb-4">
@@ -119,6 +129,64 @@ export function AdminTab({
             Failed to load cluster stats
           </p>
         )}
+      </div>
+
+      {/* Maintenance Banner */}
+      <div className="p-4 bg-slate-800/50 rounded-lg">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-white font-medium">Maintenance Banner</h4>
+          <span className={`px-2 py-1 text-xs rounded-full ${
+            maintenanceBanner?.enabled
+              ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+              : 'bg-slate-600/20 text-slate-400 border border-slate-600/30'
+          }`}>
+            {maintenanceBanner?.enabled ? 'Active' : 'Inactive'}
+          </span>
+        </div>
+        <p className="text-slate-400 text-sm mb-3">
+          Display a maintenance banner to all users at the top of the page.
+        </p>
+
+        <div className="space-y-3">
+          {/* Toggle Switch */}
+          <div className="flex items-center justify-between">
+            <span className="text-slate-300 text-sm">Enable Banner</span>
+            <button
+              onClick={() => onUpdateMaintenance(!maintenanceBanner?.enabled, maintenanceMessage)}
+              disabled={maintenanceLoading}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                maintenanceBanner?.enabled ? 'bg-orange-500' : 'bg-slate-600'
+              } ${maintenanceLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  maintenanceBanner?.enabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Message Input */}
+          <div>
+            <label className="text-slate-400 text-sm block mb-1">Message</label>
+            <input
+              type="text"
+              value={maintenanceMessage}
+              onChange={(e) => onMaintenanceMessageChange(e.target.value)}
+              placeholder="Enter maintenance message..."
+              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 text-sm focus:outline-none focus:border-orange-500"
+            />
+          </div>
+
+          {/* Save Button */}
+          <button
+            onClick={() => onUpdateMaintenance(maintenanceBanner?.enabled ?? false, maintenanceMessage)}
+            disabled={maintenanceLoading}
+            className="w-full py-2 bg-orange-600 hover:bg-orange-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+          >
+            {maintenanceLoading ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
       </div>
 
       {/* Current Impersonation Status */}

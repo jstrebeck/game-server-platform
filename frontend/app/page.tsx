@@ -168,6 +168,19 @@ export default function Home() {
     }
   }, [user, activeTab])
 
+  // Fetch maintenance banner on load and when admin tab is active (for admin to see current state)
+  useEffect(() => {
+    if (user && !authLoading) {
+      admin.fetchMaintenanceBanner()
+    }
+  }, [user, authLoading])
+
+  useEffect(() => {
+    if (isAdmin(user) && activeTab === 'admin') {
+      admin.fetchMaintenanceBanner()
+    }
+  }, [user, activeTab])
+
   // Loading state
   if (authLoading) {
     return (
@@ -224,9 +237,23 @@ export default function Home() {
         Support
       </button>
 
+      {/* Maintenance Banner */}
+      {admin.maintenanceBanner?.enabled && admin.maintenanceBanner.message && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-r from-orange-600 to-red-600 text-white py-2 px-4 flex items-center justify-center gap-3 shadow-lg">
+          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <span className="font-medium text-sm">
+            {admin.maintenanceBanner.message}
+          </span>
+        </div>
+      )}
+
       {/* Impersonation Banner */}
       {admin.impersonating && (
-        <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-4 shadow-lg">
+        <div className={`fixed left-0 right-0 z-50 bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-4 shadow-lg ${
+          admin.maintenanceBanner?.enabled && admin.maintenanceBanner.message ? 'top-10' : 'top-0'
+        }`}>
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
@@ -242,7 +269,15 @@ export default function Home() {
         </div>
       )}
 
-      <div className={`w-full max-w-2xl ${admin.impersonating ? 'pt-12' : ''}`}>
+      <div className={`w-full max-w-2xl ${
+        admin.maintenanceBanner?.enabled && admin.maintenanceBanner.message && admin.impersonating
+          ? 'pt-24'
+          : admin.maintenanceBanner?.enabled && admin.maintenanceBanner.message
+          ? 'pt-12'
+          : admin.impersonating
+          ? 'pt-12'
+          : ''
+      }`}>
         {/* Header */}
         <div className="text-center mb-8">
           <img src="/logo.svg" alt="Minecraft Hosting" className="h-16 mx-auto mb-2" />
@@ -528,11 +563,16 @@ export default function Home() {
                   userSearchQuery={admin.userSearchQuery}
                   usersLoading={admin.usersLoading}
                   usersTotal={admin.usersTotal}
+                  maintenanceBanner={admin.maintenanceBanner}
+                  maintenanceLoading={admin.maintenanceLoading}
+                  maintenanceMessage={admin.maintenanceMessage}
                   onFetchClusterStats={admin.fetchClusterStats}
                   onUserSearchQueryChange={admin.setUserSearchQuery}
                   onSearchUsers={admin.searchUsers}
                   onStartImpersonation={admin.startImpersonation}
                   onStopImpersonation={admin.stopImpersonation}
+                  onMaintenanceMessageChange={admin.setMaintenanceMessage}
+                  onUpdateMaintenance={admin.updateMaintenanceBanner}
                 />
               )}
             </div>

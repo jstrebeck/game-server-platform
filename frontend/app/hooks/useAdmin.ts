@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react'
 import { API_URL } from '@/app/lib/constants'
-import { Impersonation, ClusterStats, AdminUser } from '@/app/lib/types'
+import { Impersonation, ClusterStats, AdminUser, MaintenanceBanner } from '@/app/lib/types'
 import { isAdmin } from '@/app/lib/utils'
 
 interface UseAdminProps {
@@ -20,6 +20,9 @@ export function useAdmin({ user, getAccessToken, setError, onImpersonationChange
   const [usersTotal, setUsersTotal] = useState(0)
   const [clusterStats, setClusterStats] = useState<ClusterStats | null>(null)
   const [clusterStatsLoading, setClusterStatsLoading] = useState(false)
+  const [maintenanceBanner, setMaintenanceBanner] = useState<MaintenanceBanner | null>(null)
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false)
+  const [maintenanceMessage, setMaintenanceMessage] = useState('')
 
   const searchUsers = useCallback(async (query: string = '') => {
     if (!isAdmin(user)) return
@@ -84,6 +87,61 @@ export function useAdmin({ user, getAccessToken, setError, onImpersonationChange
     }
   }, [user, getAccessToken])
 
+  const fetchMaintenanceBanner = useCallback(async () => {
+    // Public endpoint - no auth required
+    try {
+      const res = await fetch(`${API_URL}/maintenance`, {
+        headers: {
+          'Accept': 'application/json',
+        },
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setMaintenanceBanner(data)
+        setMaintenanceMessage(data.message || '')
+      } else {
+        console.error('Failed to fetch maintenance banner:', res.status)
+      }
+    } catch (err) {
+      console.error('Error fetching maintenance banner:', err)
+    }
+  }, [])
+
+  const updateMaintenanceBanner = useCallback(async (enabled: boolean, message: string) => {
+    if (!isAdmin(user)) return
+
+    setMaintenanceLoading(true)
+    try {
+      const token = await getAccessToken()
+      if (!token) return
+
+      const res = await fetch(`${API_URL}/admin/maintenance`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ enabled, message }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setMaintenanceBanner(data)
+        setMaintenanceMessage(data.message || '')
+      } else {
+        console.error('Failed to update maintenance banner:', res.status)
+        setError?.('Failed to update maintenance banner')
+      }
+    } catch (err) {
+      console.error('Error updating maintenance banner:', err)
+      setError?.('Failed to update maintenance banner')
+    } finally {
+      setMaintenanceLoading(false)
+    }
+  }, [user, getAccessToken, setError])
+
   const startImpersonation = useCallback(async (targetUserId: string) => {
     if (!isAdmin(user)) return
 
@@ -132,9 +190,15 @@ export function useAdmin({ user, getAccessToken, setError, onImpersonationChange
     usersTotal,
     clusterStats,
     clusterStatsLoading,
+    maintenanceBanner,
+    maintenanceLoading,
+    maintenanceMessage,
+    setMaintenanceMessage,
     setUserSearchQuery,
     searchUsers,
     fetchClusterStats,
+    fetchMaintenanceBanner,
+    updateMaintenanceBanner,
     startImpersonation,
     stopImpersonation,
   }

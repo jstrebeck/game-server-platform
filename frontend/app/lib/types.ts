@@ -70,3 +70,8 @@ export interface ConfigFile {
   name: string
   path: string
 }
+
+export interface MaintenanceBanner {
+  enabled: boolean
+  message: string
+}
