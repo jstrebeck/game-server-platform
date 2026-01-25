@@ -32,6 +32,7 @@ async def get_current_user(
             "sub": payload.get("sub"),
             "user_id": get_user_id_from_token(payload),
             "email": email,
+            "email_verified": payload.get("email_verified", False),
             "permissions": payload.get("permissions", []),
             "roles": roles,
         }
@@ -49,6 +50,27 @@ async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     roles = current_user.get("roles", [])
     if "Admin" not in roles:
         raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
+async def require_verified_email(current_user: dict = Depends(get_current_user)) -> dict:
+    """Dependency that requires the user to have a verified email address"""
+    email_verified = current_user.get("email_verified")
+    logger.info(f"Email verification check for {current_user.get('email')}: email_verified={email_verified}")
+
+    if not email_verified:
+        # JWT claim may be stale - check Auth0 Management API for real-time status
+        from .auth0_management import is_email_verified
+        user_id = current_user.get("sub")
+        if user_id:
+            email_verified = is_email_verified(user_id)
+            logger.info(f"Management API check for {current_user.get('email')}: email_verified={email_verified}")
+
+    if not email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Email verification required. Please verify your email address before starting a server."
+        )
     return current_user
 
 

@@ -190,6 +190,41 @@ def get_user_metadata(user_id: str) -> dict:
         return {}
 
 
+def is_email_verified(user_id: str) -> bool:
+    """
+    Check if a user's email is verified via the Management API.
+
+    This is useful when the JWT claim may be stale (e.g., user verified
+    email after logging in but before token refresh).
+
+    Args:
+        user_id: The Auth0 user ID (e.g., 'auth0|123456')
+
+    Returns:
+        True if email is verified, False otherwise
+    """
+    token = get_management_token()
+
+    import urllib.parse
+    encoded_user_id = urllib.parse.quote(user_id, safe='')
+
+    url = f"https://{AUTH0_MGMT_DOMAIN}/api/v2/users/{encoded_user_id}"
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                url,
+                params={"fields": "email_verified"},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("email_verified", False)
+    except Exception as e:
+        logger.error(f"Error checking email verification for {user_id}: {e}")
+        return False
+
+
 def update_user_metadata(user_id: str, metadata: dict) -> bool:
     """
     Update the app_metadata for a user.

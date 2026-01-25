@@ -14,7 +14,7 @@ from kubernetes import client, config, watch
 from pydantic import BaseModel
 from typing import Optional
 
-from auth.dependencies import get_user_id, get_effective_user_id, require_admin, sanitize_user_id, get_current_user
+from auth.dependencies import get_user_id, get_effective_user_id, require_admin, require_verified_email, sanitize_user_id, get_current_user
 from auth.websocket_auth import authenticate_websocket
 from auth import auth0_management
 from k8s.k8s_manager import K8sManager
@@ -53,7 +53,8 @@ def create_game_server(
     game: str = "minecraft",
     version: str = "LATEST",
     user_id: str = Depends(get_effective_user_id),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_verified_email)
 ):
     """Create a new game server for the authenticated user"""
     # Start trial for new users who haven't started one yet
@@ -248,7 +249,8 @@ def stop_server(user_id: str = Depends(get_effective_user_id)):
 @app.post("/gameserver/start")
 async def start_server(
     user_id: str = Depends(get_effective_user_id),
-    current_user: dict = Depends(subscription.require_active_subscription)
+    current_user: dict = Depends(subscription.require_active_subscription),
+    _: dict = Depends(require_verified_email)
 ):
     """Start the game server for the authenticated user. Requires active subscription or trial."""
     namespace = f"server-{user_id}"

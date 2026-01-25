@@ -12,6 +12,7 @@ interface UseServerProps {
   fetchBillingStatus?: () => void
   setShowPaymentModal?: (show: boolean) => void
   setPaymentError?: (error: string | null) => void
+  setShowEmailVerificationModal?: (show: boolean) => void
 }
 
 export function useServer({
@@ -22,6 +23,7 @@ export function useServer({
   fetchBillingStatus,
   setShowPaymentModal,
   setPaymentError,
+  setShowEmailVerificationModal,
 }: UseServerProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ServerResult | null>(null)
@@ -84,6 +86,8 @@ export function useServer({
           setServerExists(true)
           setError('Server already exists.')
           await getExistingServer()
+        } else if (res.status === 403) {
+          setShowEmailVerificationModal?.(true)
         } else if (res.status === 500) {
           setError('Server error occurred. Please try again later.')
         } else if (res.status === 401) {
@@ -100,6 +104,9 @@ export function useServer({
       setServerExists(true)
       setError(null)
 
+      // Refresh billing status since creating a server starts a trial
+      fetchBillingStatus?.()
+
       if (data.status === 'ready') {
         onServerReady?.()
       }
@@ -109,7 +116,7 @@ export function useServer({
     } finally {
       setLoading(false)
     }
-  }, [fetchWithAuth, getExistingServer, onServerReady, onServerStopped])
+  }, [fetchWithAuth, getExistingServer, onServerReady, onServerStopped, fetchBillingStatus])
 
   const startServer = useCallback(async () => {
     setLoading(true)
@@ -126,6 +133,8 @@ export function useServer({
           setPaymentError?.(data.detail?.message || 'Subscription required to start server')
           setShowPaymentModal?.(true)
           fetchBillingStatus?.()
+        } else if (res.status === 403) {
+          setShowEmailVerificationModal?.(true)
         } else {
           setError(`Failed to start server (Error ${res.status})`)
         }
@@ -139,7 +148,7 @@ export function useServer({
     } finally {
       setLoading(false)
     }
-  }, [fetchWithAuth, getExistingServer, fetchBillingStatus, setShowPaymentModal, setPaymentError])
+  }, [fetchWithAuth, getExistingServer, fetchBillingStatus, setShowPaymentModal, setPaymentError, setShowEmailVerificationModal])
 
   const stopServer = useCallback(async () => {
     setLoading(true)
@@ -190,6 +199,8 @@ export function useServer({
           setPaymentError?.(data.detail?.message || 'Subscription required to start server')
           setShowPaymentModal?.(true)
           fetchBillingStatus?.()
+        } else if (startRes.status === 403) {
+          setShowEmailVerificationModal?.(true)
         } else {
           setError(`Failed to restart server (Error ${startRes.status})`)
         }
@@ -203,7 +214,7 @@ export function useServer({
     } finally {
       setLoading(false)
     }
-  }, [fetchWithAuth, getExistingServer, onServerStopped, fetchBillingStatus, setShowPaymentModal, setPaymentError])
+  }, [fetchWithAuth, getExistingServer, onServerStopped, fetchBillingStatus, setShowPaymentModal, setPaymentError, setShowEmailVerificationModal])
 
   const deleteServer = useCallback(async () => {
     if (!confirm('Are you sure you want to delete your server? This action cannot be undone.')) {

@@ -22,7 +22,7 @@ import { useTerms } from '@/app/hooks/useTerms'
 
 import { DetailsTab, MonitoringTab, OperationsTab, PluginsTab, BillingTab, AdminTab } from '@/app/components/tabs'
 import { LogViewer } from '@/app/components/LogViewer'
-import { PaymentModal, CapacityModal, UpgradeModal, SupportModal, TermsModal } from '@/app/components/modals'
+import { PaymentModal, CapacityModal, UpgradeModal, SupportModal, TermsModal, EmailVerificationModal } from '@/app/components/modals'
 import { LandingPage } from '@/app/components/LandingPage'
 
 type TabType = 'details' | 'monitoring' | 'operations' | 'plugins' | 'billing' | 'admin'
@@ -35,6 +35,7 @@ export default function Home() {
 
   const [activeTab, setActiveTab] = useState<TabType>('details')
   const [selectedVersion, setSelectedVersion] = useState('LATEST')
+  const [showEmailVerificationModal, setShowEmailVerificationModal] = useState(false)
 
   // Admin hook (needs to be initialized first as impersonating state is used by other hooks)
   const admin = useAdmin({
@@ -77,6 +78,7 @@ export default function Home() {
     fetchBillingStatus: billing.fetchBillingStatus,
     setShowPaymentModal: billing.setShowPaymentModal,
     setPaymentError: billing.setPaymentError,
+    setShowEmailVerificationModal,
   })
 
   // Logs hook
@@ -594,6 +596,17 @@ export default function Home() {
             support.setShowSupportModal(false)
             support.setSupportMessage(null)
             support.setSupportError(null)
+          }}
+        />
+      )}
+
+      {/* Email Verification Modal */}
+      {showEmailVerificationModal && (
+        <EmailVerificationModal
+          userEmail={user?.email as string | undefined}
+          onClose={() => setShowEmailVerificationModal(false)}
+          onRefreshToken={async () => {
+            await getAccessToken(true)
           }}
         />
       )}
