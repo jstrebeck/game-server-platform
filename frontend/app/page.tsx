@@ -387,7 +387,7 @@ export default function Home() {
                       ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
                       : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
                   }`}>
-                    {server.result.status === 'ready' ? '● Ready' : server.result.status === 'stopped' ? '● Stopped' : '● Starting'}
+                    {server.result.status === 'ready' ? '● Server Running' : server.result.status === 'stopped' ? '● Server Stopped' : '● Starting'}
                   </span>
                 )}
               </div>
@@ -405,7 +405,7 @@ export default function Home() {
                   loading={server.loading}
                   showLogs={logsHook.showLogs}
                   onStartServer={server.startServer}
-                  onStopServer={server.stopServer}
+                  onRestartServer={server.restartServer}
                   onDeleteServer={server.deleteServer}
                   onViewLogs={logsHook.fetchPodsAndConnect}
                 />
@@ -464,6 +464,7 @@ export default function Home() {
                   billingLoading={billing.billingLoading}
                   selectedPlan={billing.selectedPlan}
                   upgradeSuccess={billing.upgradeSuccess}
+                  isImpersonating={admin.impersonating !== null}
                   onSelectPlan={billing.setSelectedPlan}
                   onSubscribe={billing.handleSubscribe}
                   onManageSubscription={billing.handleManageSubscription}

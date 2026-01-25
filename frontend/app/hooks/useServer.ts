@@ -165,6 +165,46 @@ export function useServer({
     }
   }, [fetchWithAuth, getExistingServer, onServerStopped])
 
+  const restartServer = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    onServerStopped?.()
+
+    try {
+      const stopRes = await fetchWithAuth(`${API_URL}/gameserver/stop`, {
+        method: 'POST',
+      })
+
+      if (!stopRes.ok) {
+        setError(`Failed to restart server (Error ${stopRes.status})`)
+        return
+      }
+
+      const startRes = await fetchWithAuth(`${API_URL}/gameserver/start`, {
+        method: 'POST',
+      })
+
+      if (!startRes.ok) {
+        if (startRes.status === 402) {
+          const data = await startRes.json()
+          setPaymentError?.(data.detail?.message || 'Subscription required to start server')
+          setShowPaymentModal?.(true)
+          fetchBillingStatus?.()
+        } else {
+          setError(`Failed to restart server (Error ${startRes.status})`)
+        }
+        return
+      }
+
+      await getExistingServer()
+    } catch (err) {
+      console.error('Error restarting server:', err)
+      setError('Failed to restart server. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }, [fetchWithAuth, getExistingServer, onServerStopped, fetchBillingStatus, setShowPaymentModal, setPaymentError])
+
   const deleteServer = useCallback(async () => {
     if (!confirm('Are you sure you want to delete your server? This action cannot be undone.')) {
       return
@@ -212,6 +252,7 @@ export function useServer({
     createServer,
     startServer,
     stopServer,
+    restartServer,
     deleteServer,
     resetServerState,
   }

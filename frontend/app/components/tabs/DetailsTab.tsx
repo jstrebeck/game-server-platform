@@ -1,12 +1,15 @@
 'use client'
 
 import { ServerResult } from '@/app/lib/types'
+import { LATEST_MC_VERSION } from '@/app/lib/constants'
 
 interface DetailsTabProps {
   result: ServerResult
 }
 
 export function DetailsTab({ result }: DetailsTabProps) {
+  const displayVersion = result.version === 'LATEST' ? LATEST_MC_VERSION : result.version
+
   return (
     <div className="space-y-3 mb-4">
       <div className="p-3 bg-slate-800/50 rounded-lg">
@@ -26,7 +29,7 @@ export function DetailsTab({ result }: DetailsTabProps) {
       </div>
       <div className="p-3 bg-slate-800/50 rounded-lg">
         <span className="text-slate-400 text-sm block mb-1">Minecraft Version</span>
-        <span className="text-white font-medium">{result.version || 'Unknown'}</span>
+        <span className="text-white font-medium">{displayVersion || 'Unknown'}</span>
       </div>
     </div>
   )

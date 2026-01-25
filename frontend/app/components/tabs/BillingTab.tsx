@@ -8,6 +8,7 @@ interface BillingTabProps {
   billingLoading: boolean
   selectedPlan: string
   upgradeSuccess: string | null
+  isImpersonating: boolean
   onSelectPlan: (planId: string) => void
   onSubscribe: (planId: string) => void
   onManageSubscription: () => void
@@ -20,6 +21,7 @@ export function BillingTab({
   billingLoading,
   selectedPlan,
   upgradeSuccess,
+  isImpersonating,
   onSelectPlan,
   onSubscribe,
   onManageSubscription,
@@ -28,6 +30,16 @@ export function BillingTab({
 }: BillingTabProps) {
   return (
     <div className="space-y-4 mb-4">
+      {/* Impersonation Notice */}
+      {isImpersonating && (
+        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center gap-2">
+          <svg className="w-5 h-5 text-amber-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <p className="text-amber-200 text-sm">Billing actions are disabled while impersonating a user.</p>
+        </div>
+      )}
+
       {/* Current Plan Status */}
       <div className="p-4 bg-slate-800/50 rounded-lg">
         <div className="flex items-center gap-2 mb-3">
@@ -122,19 +134,22 @@ export function BillingTab({
                     <button
                       key={plan.plan_id}
                       onClick={() => onSelectPlan(plan.plan_id)}
+                      disabled={isImpersonating}
                       className={`p-3 rounded-lg border text-left transition-all ${
-                        selectedPlan === plan.plan_id
+                        isImpersonating
+                          ? 'border-slate-700 bg-slate-800/50 opacity-50 cursor-not-allowed'
+                          : selectedPlan === plan.plan_id
                           ? 'border-emerald-500 bg-emerald-500/10'
                           : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
                       }`}
                     >
                       <span className={`font-semibold block ${
-                        selectedPlan === plan.plan_id ? 'text-emerald-400' : 'text-white'
+                        isImpersonating ? 'text-slate-400' : selectedPlan === plan.plan_id ? 'text-emerald-400' : 'text-white'
                       }`}>
                         {plan.display_name}
                       </span>
                       <span className={`text-sm ${
-                        selectedPlan === plan.plan_id ? 'text-emerald-400/70' : 'text-slate-400'
+                        isImpersonating ? 'text-slate-500' : selectedPlan === plan.plan_id ? 'text-emerald-400/70' : 'text-slate-400'
                       }`}>
                         {plan.price}/mo
                       </span>
@@ -152,7 +167,7 @@ export function BillingTab({
                 billingStatus.is_trial_expired) && (
                 <button
                   onClick={() => onSubscribe(selectedPlan)}
-                  disabled={billingLoading}
+                  disabled={billingLoading || isImpersonating}
                   className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-emerald-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
                 >
                   {billingLoading ? (
@@ -175,7 +190,7 @@ export function BillingTab({
                 billingStatus.subscription_status === 'past_due') && (
                 <button
                   onClick={onManageSubscription}
-                  disabled={billingLoading}
+                  disabled={billingLoading || isImpersonating}
                   className="flex-1 py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed font-semibold shadow-lg transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none border border-slate-600 flex items-center justify-center gap-2"
                 >
                   {billingLoading ? (
@@ -199,7 +214,7 @@ export function BillingTab({
               {billingStatus.subscription_status === 'active' && getNextPlan(billingStatus.plan_id) && (
                 <button
                   onClick={onShowUpgradeModal}
-                  disabled={billingLoading}
+                  disabled={billingLoading || isImpersonating}
                   className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed font-semibold shadow-lg hover:shadow-indigo-500/50 transition-all duration-200 transform hover:scale-[1.02] disabled:transform-none flex items-center justify-center gap-2"
                 >
                   {billingLoading ? (
