@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import time
@@ -1297,6 +1298,57 @@ async def upload_world(file: UploadFile = File(...), user_id: str = Depends(get_
 # ===================================
 # Admin Endpoints
 # ===================================
+
+# Maintenance banner configuration
+MAINTENANCE_FILE = "/data/maintenance.json"
+
+
+class MaintenanceBanner(BaseModel):
+    enabled: bool = False
+    message: str = ""
+
+
+class MaintenanceUpdateRequest(BaseModel):
+    enabled: bool
+    message: str = ""
+
+
+def get_maintenance_banner() -> MaintenanceBanner:
+    """Read maintenance banner state from file."""
+    try:
+        if os.path.exists(MAINTENANCE_FILE):
+            with open(MAINTENANCE_FILE, 'r') as f:
+                data = json.load(f)
+                return MaintenanceBanner(**data)
+    except Exception as e:
+        logger.error(f"Error reading maintenance file: {e}")
+    return MaintenanceBanner()
+
+
+def save_maintenance_banner(banner: MaintenanceBanner) -> None:
+    """Save maintenance banner state to file."""
+    os.makedirs(os.path.dirname(MAINTENANCE_FILE), exist_ok=True)
+    with open(MAINTENANCE_FILE, 'w') as f:
+        json.dump(banner.dict(), f)
+
+
+@app.get("/maintenance", response_model=MaintenanceBanner)
+def get_maintenance():
+    """Get current maintenance banner state. Public endpoint."""
+    return get_maintenance_banner()
+
+
+@app.put("/admin/maintenance", response_model=MaintenanceBanner)
+def update_maintenance(
+    request: MaintenanceUpdateRequest,
+    admin_user: dict = Depends(require_admin)
+):
+    """Update maintenance banner. Admin only."""
+    banner = MaintenanceBanner(enabled=request.enabled, message=request.message)
+    save_maintenance_banner(banner)
+    logger.info(f"Admin {admin_user['sub']} updated maintenance banner: enabled={banner.enabled}")
+    return banner
+
 
 class ImpersonateRequest(BaseModel):
     user_id: str
