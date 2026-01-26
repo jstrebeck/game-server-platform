@@ -64,3 +64,38 @@ class UpgradeResponse(BaseModel):
     new_plan_id: str
     new_memory: str
     message: str
+
+
+class ReferralStats(BaseModel):
+    """Statistics about a user's referral activity."""
+    successful_referrals: int = 0
+    credits_earned_cents: int = 0
+    credits_cap_reached: bool = False
+
+
+class ReferralCodeResponse(BaseModel):
+    """Response model for getting a user's referral code and stats."""
+    referral_code: str
+    share_url: str
+    stats: ReferralStats
+    referred_by: Optional[str] = None
+    referred_at: Optional[str] = None
+    max_referrals: int = 6
+
+
+class ReferralValidateRequest(BaseModel):
+    """Request model for validating a referral code."""
+    code: str
+
+
+class ReferralValidateResponse(BaseModel):
+    """Response model for referral code validation."""
+    valid: bool
+    message: str
+    referrer_id: Optional[str] = None
+
+
+class CheckoutWithReferralRequest(BaseModel):
+    """Request model for checkout with optional referral code."""
+    plan_id: str
+    referral_code: Optional[str] = None

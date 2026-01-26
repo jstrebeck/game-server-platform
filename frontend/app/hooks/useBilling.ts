@@ -31,16 +31,21 @@ export function useBilling({ fetchWithAuth, setError }: UseBillingProps) {
     }
   }, [fetchWithAuth])
 
-  const handleSubscribe = useCallback(async (planId: string = selectedPlan) => {
+  const handleSubscribe = useCallback(async (planId: string = selectedPlan, referralCode?: string) => {
     setBillingLoading(true)
     setPaymentError(null)
     try {
+      const body: { plan_id: string; referral_code?: string } = { plan_id: planId }
+      if (referralCode) {
+        body.referral_code = referralCode.trim().toUpperCase()
+      }
+
       const res = await fetchWithAuth(`${API_URL}/billing/checkout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ plan_id: planId }),
+        body: JSON.stringify(body),
       })
       if (res.ok) {
         const data = await res.json()

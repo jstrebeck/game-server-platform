@@ -75,3 +75,24 @@ export interface MaintenanceBanner {
   enabled: boolean
   message: string
 }
+
+export interface ReferralStats {
+  successful_referrals: number
+  credits_earned_cents: number
+  credits_cap_reached: boolean
+}
+
+export interface ReferralCodeResponse {
+  referral_code: string
+  share_url: string
+  stats: ReferralStats
+  referred_by: string | null
+  referred_at: string | null
+  max_referrals: number
+}
+
+export interface ReferralValidateResponse {
+  valid: boolean
+  message: string
+  referrer_id: string | null
+}

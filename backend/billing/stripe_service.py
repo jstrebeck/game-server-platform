@@ -92,7 +92,7 @@ def get_or_create_customer(user_id: str, email: str, existing_customer_id: str =
     return create_customer(user_id, email)
 
 
-def create_checkout_session(customer_id: str, user_id: str, plan_id: str = "2gb") -> dict:
+def create_checkout_session(customer_id: str, user_id: str, plan_id: str = "2gb", referral_code: str = None, referrer_id: str = None) -> dict:
     """
     Create a Stripe Checkout session for subscription.
 
@@ -100,11 +100,41 @@ def create_checkout_session(customer_id: str, user_id: str, plan_id: str = "2gb"
         customer_id: Stripe customer ID
         user_id: Auth0 user ID (for metadata)
         plan_id: Plan ID ("2gb", "4gb", "6gb", "8gb")
+        referral_code: Optional referral code used
+        referrer_id: Optional referrer's Auth0 user ID
 
     Returns:
         Dict with checkout_url and session_id
     """
     price_id = get_price_id_for_plan(plan_id)
+
+    # Build metadata
+    session_metadata = {
+        "auth0_user_id": user_id,
+        "plan_id": plan_id
+    }
+
+    subscription_metadata = {
+        "auth0_user_id": user_id,
+        "plan_id": plan_id
+    }
+
+    # Add referral info if present
+    if referral_code and referrer_id:
+        session_metadata["referral_code"] = referral_code
+        session_metadata["referrer_id"] = referrer_id
+        subscription_metadata["referral_code"] = referral_code
+        subscription_metadata["referrer_id"] = referrer_id
+
+    # Build subscription data with optional trial
+    subscription_data = {
+        "metadata": subscription_metadata
+    }
+
+    # If using a referral code, give 30-day trial (free first month)
+    if referral_code and referrer_id:
+        subscription_data["trial_period_days"] = 30
+        logger.info(f"Adding 30-day trial for referred user {user_id}")
 
     try:
         session = stripe.checkout.Session.create(
@@ -117,18 +147,10 @@ def create_checkout_session(customer_id: str, user_id: str, plan_id: str = "2gb"
             mode="subscription",
             success_url=STRIPE_SUCCESS_URL,
             cancel_url=STRIPE_CANCEL_URL,
-            metadata={
-                "auth0_user_id": user_id,
-                "plan_id": plan_id
-            },
-            subscription_data={
-                "metadata": {
-                    "auth0_user_id": user_id,
-                    "plan_id": plan_id
-                }
-            }
+            metadata=session_metadata,
+            subscription_data=subscription_data
         )
-        logger.info(f"Created checkout session {session.id} for customer {customer_id}, plan {plan_id}")
+        logger.info(f"Created checkout session {session.id} for customer {customer_id}, plan {plan_id}, referral={referral_code is not None}")
         return {
             "checkout_url": session.url,
             "session_id": session.id
