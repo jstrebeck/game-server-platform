@@ -21,8 +21,13 @@ from auth import auth0_management
 from k8s.k8s_manager import K8sManager
 from k8s.velocity_manager import VelocityManager
 from models.game_models import GameServerResponse
-from billing.models import SubscriptionStatus, CheckoutResponse, PortalResponse, CheckoutRequest, AvailablePlansResponse, PlanInfo, PLANS, UpgradeResponse
-from billing import stripe_service, subscription, webhook_handler
+from billing.models import (
+    SubscriptionStatus, CheckoutResponse, PortalResponse, CheckoutRequest,
+    AvailablePlansResponse, PlanInfo, PLANS, UpgradeResponse,
+    ReferralCodeResponse, ReferralStats, ReferralValidateRequest, ReferralValidateResponse,
+    CheckoutWithReferralRequest
+)
+from billing import stripe_service, subscription, webhook_handler, referral
 
 load_dotenv()
 
@@ -1615,13 +1620,14 @@ def get_available_plans():
 
 @app.post("/billing/checkout", response_model=CheckoutResponse)
 def create_checkout(
-    request: CheckoutRequest,
+    request: CheckoutWithReferralRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Create a Stripe Checkout session for subscription."""
+    """Create a Stripe Checkout session for subscription with optional referral code."""
     user_id = current_user.get("sub")
     email = current_user.get("email", "")
     plan_id = request.plan_id
+    referral_code = request.referral_code
 
     # Validate plan_id
     if plan_id not in PLANS:
@@ -1639,6 +1645,14 @@ def create_checkout(
             detail=f"Sorry, we're currently at capacity. Please try again later."
         )
 
+    # Validate referral code if provided
+    referrer_id = None
+    if referral_code:
+        is_valid, referrer_id, error_msg = referral.validate_referral_code(referral_code, user_id)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+        logger.info(f"Valid referral code {referral_code} for user {user_id}, referrer: {referrer_id}")
+
     # Get existing customer ID from metadata or create new customer
     status = subscription.get_subscription_status(user_id)
     customer_id = stripe_service.get_or_create_customer(
@@ -1651,8 +1665,12 @@ def create_checkout(
     if not status.stripe_customer_id:
         auth0_management.update_user_metadata(user_id, {"stripe_customer_id": customer_id})
 
-    # Create checkout session with selected plan
-    result = stripe_service.create_checkout_session(customer_id, user_id, plan_id)
+    # Create checkout session with selected plan and optional referral
+    result = stripe_service.create_checkout_session(
+        customer_id, user_id, plan_id,
+        referral_code=referral_code,
+        referrer_id=referrer_id
+    )
 
     return CheckoutResponse(
         checkout_url=result["checkout_url"],
@@ -1745,6 +1763,65 @@ def upgrade_plan(current_user: dict = Depends(get_current_user)):
         new_memory=new_memory,
         message=f"Successfully upgraded to {PLANS[next_plan]['display_name']}. Restart your server to apply the new RAM allocation."
     )
+
+
+# =====================
+# Referral Endpoints
+# =====================
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://minecrafthosting.gg")
+
+
+@app.get("/referral/code", response_model=ReferralCodeResponse)
+def get_referral_code(current_user: dict = Depends(get_current_user)):
+    """Get or create the user's referral code and stats."""
+    user_id = current_user.get("sub")
+
+    # Get or create referral code
+    code = referral.get_or_create_referral_code(user_id)
+
+    # Get stats
+    stats_data = referral.get_referral_stats(user_id)
+
+    # Build share URL
+    share_url = f"{FRONTEND_URL}?ref={code}"
+
+    return ReferralCodeResponse(
+        referral_code=code,
+        share_url=share_url,
+        stats=ReferralStats(
+            successful_referrals=stats_data.get("successful_referrals", 0),
+            credits_earned_cents=stats_data.get("credits_earned_cents", 0),
+            credits_cap_reached=stats_data.get("credits_cap_reached", False)
+        ),
+        referred_by=stats_data.get("referred_by"),
+        referred_at=stats_data.get("referred_at"),
+        max_referrals=referral.MAX_REFERRAL_CREDITS
+    )
+
+
+@app.post("/referral/validate", response_model=ReferralValidateResponse)
+def validate_referral_code_endpoint(
+    request: ReferralValidateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Validate a referral code before checkout."""
+    user_id = current_user.get("sub")
+
+    is_valid, referrer_id, error_msg = referral.validate_referral_code(request.code, user_id)
+
+    if is_valid:
+        return ReferralValidateResponse(
+            valid=True,
+            message="Valid referral code! You'll get your first month free.",
+            referrer_id=referrer_id
+        )
+    else:
+        return ReferralValidateResponse(
+            valid=False,
+            message=error_msg or "Invalid referral code",
+            referrer_id=None
+        )
 
 
 @app.post("/webhooks/stripe")

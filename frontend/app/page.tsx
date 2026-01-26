@@ -19,6 +19,7 @@ import { useAdmin } from '@/app/hooks/useAdmin'
 import { useConfig } from '@/app/hooks/useConfig'
 import { useSupport } from '@/app/hooks/useSupport'
 import { useTerms } from '@/app/hooks/useTerms'
+import { useReferral } from '@/app/hooks/useReferral'
 
 import { DetailsTab, MonitoringTab, OperationsTab, PluginsTab, BillingTab, AdminTab } from '@/app/components/tabs'
 import { LogViewer } from '@/app/components/LogViewer'
@@ -36,6 +37,30 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('details')
   const [selectedVersion, setSelectedVersion] = useState('LATEST')
   const [showEmailVerificationModal, setShowEmailVerificationModal] = useState(false)
+  const [initialReferralCode, setInitialReferralCode] = useState<string>('')
+
+  // Read referral code from URL or localStorage on mount
+  useEffect(() => {
+    // Check URL params first
+    const urlParams = new URLSearchParams(window.location.search)
+    const refCode = urlParams.get('ref')
+
+    if (refCode) {
+      // Store in localStorage for persistence through login
+      localStorage.setItem('referralCode', refCode.toUpperCase())
+      setInitialReferralCode(refCode.toUpperCase())
+      // Clean up URL without page reload
+      const newUrl = window.location.pathname + window.location.hash
+      window.history.replaceState({}, '', newUrl)
+    } else {
+      // Check localStorage for code saved before login
+      const savedCode = localStorage.getItem('referralCode')
+      if (savedCode) {
+        setInitialReferralCode(savedCode)
+      }
+    }
+  }, [])
+
 
   // Admin hook (needs to be initialized first as impersonating state is used by other hooks)
   const admin = useAdmin({
@@ -59,6 +84,9 @@ export default function Home() {
     fetchWithAuth,
     setError: (error) => server.setError(error),
   })
+
+  // Referral hook
+  const referral = useReferral({ fetchWithAuth })
 
   // Plugins hook
   const plugins = usePlugins({
@@ -180,6 +208,20 @@ export default function Home() {
       admin.fetchMaintenanceBanner()
     }
   }, [user, activeTab])
+
+  // Fetch referral data when billing tab is active and user has active subscription
+  useEffect(() => {
+    if (activeTab === 'billing' && billing.billingStatus?.subscription_status === 'active' && !referral.referralData && !referral.referralLoading) {
+      referral.fetchReferralCode()
+    }
+  }, [activeTab, billing.billingStatus?.subscription_status])
+
+  // Clear referral code from localStorage after user has active subscription
+  useEffect(() => {
+    if (billing.billingStatus?.subscription_status === 'active') {
+      localStorage.removeItem('referralCode')
+    }
+  }, [billing.billingStatus?.subscription_status])
 
   // Loading state
   if (authLoading) {
@@ -551,6 +593,15 @@ export default function Home() {
                   onManageSubscription={billing.handleManageSubscription}
                   onShowUpgradeModal={() => billing.setShowUpgradeModal(true)}
                   getNextPlan={billing.getNextPlan}
+                  referralData={referral.referralData}
+                  referralLoading={referral.referralLoading}
+                  validationResult={referral.validationResult}
+                  validating={referral.validating}
+                  copySuccess={referral.copySuccess}
+                  onCopyCode={referral.copyReferralCode}
+                  onValidateCode={referral.validateReferralCode}
+                  onClearValidation={referral.clearValidation}
+                  initialReferralCode={initialReferralCode}
                 />
               )}
 

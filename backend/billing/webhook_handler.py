@@ -5,6 +5,7 @@ import stripe
 from auth import auth0_management
 from auth.dependencies import sanitize_user_id
 from k8s.k8s_manager import K8sManager
+from . import referral
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,17 @@ def handle_checkout_session_completed(event: stripe.Event) -> dict:
     """
     Handle checkout.session.completed event.
     Sets subscription status to "active" after successful payment.
+    Also handles referral crediting if a referral code was used.
     """
     session = event.data.object
     customer_id = session.customer
     subscription_id = session.subscription
     user_id = session.metadata.get("auth0_user_id")
     plan_id = session.metadata.get("plan_id", "2gb")
+
+    # Get referral info from metadata
+    referral_code = session.metadata.get("referral_code")
+    referrer_id = session.metadata.get("referrer_id")
 
     if not user_id:
         # Try to get user_id from customer metadata
@@ -47,7 +53,29 @@ def handle_checkout_session_completed(event: stripe.Event) -> dict:
     auth0_management.update_user_metadata(user_id, metadata)
     logger.info(f"User {user_id} subscription activated via checkout, plan: {plan_id}")
 
-    return {"status": "success", "user_id": user_id, "plan_id": plan_id}
+    # Handle referral if present
+    referral_result = None
+    if referral_code and referrer_id:
+        logger.info(f"Processing referral: user {user_id} referred by {referrer_id} with code {referral_code}")
+
+        # Mark the new user as referred
+        referral.mark_user_as_referred(user_id, referrer_id)
+
+        # Credit the referrer
+        success, message = referral.credit_referrer(referrer_id, user_id, plan_id)
+        referral_result = {"success": success, "message": message}
+
+        if success:
+            logger.info(f"Referral credit applied: {message}")
+        else:
+            logger.warning(f"Referral credit not applied: {message}")
+
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "plan_id": plan_id,
+        "referral": referral_result
+    }
 
 
 def handle_subscription_updated(event: stripe.Event) -> dict:
