@@ -1,0 +1,91 @@
+# Velero Helm Values (Alternative to CLI install)
+#
+# If you prefer Helm installation over CLI:
+#   helm repo add vmware-tanzu https://vmware-tanzu.github.io/helm-charts
+#   helm install velero vmware-tanzu/velero -n velero --create-namespace -f velero-values.yaml
+#
+
+# Reduced resource requirements for smaller clusters
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Node agent (formerly restic) for PVC backups
+deployNodeAgent: true
+nodeAgent:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Use Backblaze B2 via S3-compatible API
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: YOUR_BUCKET_NAME  # Replace with your B2 bucket name
+      config:
+        region: us-west-004  # Replace with your B2 region
+        s3ForcePathStyle: "true"
+        s3Url: https://s3.us-west-004.backblazeb2.com  # Replace region
+
+  # Disable volume snapshots (using file-level backup instead)
+  volumeSnapshotLocation: []
+
+  # Use file-level backup for all PVCs by default
+  defaultVolumesToFsBackup: true
+
+# AWS plugin for S3-compatible storage
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.9.0
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+# Credentials secret (create separately or inline)
+# kubectl create secret generic velero-credentials -n velero \
+#   --from-file=cloud=/path/to/credentials-file
+credentials:
+  useSecret: true
+  secretContents:
+    cloud: |
+      [default]
+      aws_access_key_id = YOUR_B2_APPLICATION_KEY_ID
+      aws_secret_access_key = YOUR_B2_APPLICATION_KEY
+
+# Schedule backups
+schedules:
+  minecraft-daily:
+    disabled: false
+    schedule: "0 3 * * *"  # 3 AM UTC daily
+    template:
+      ttl: "168h"  # 7 days
+      includedResources:
+        - persistentvolumeclaims
+        - persistentvolumes
+      labelSelector:
+        matchLabels:
+          backup: minecraft
+      defaultVolumesToFsBackup: true
+
+  minecraft-weekly:
+    disabled: false
+    schedule: "0 4 * * 0"  # 4 AM UTC Sundays
+    template:
+      ttl: "720h"  # 30 days
+      includedResources:
+        - persistentvolumeclaims
+        - persistentvolumes
+      labelSelector:
+        matchLabels:
+          backup: minecraft
+      defaultVolumesToFsBackup: true
