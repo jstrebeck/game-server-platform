@@ -54,6 +54,129 @@ app.add_middleware(
 )
 
 
+# K8up backup configuration
+K8UP_BACKUP_CONFIG_NAMESPACE = os.getenv("K8UP_BACKUP_CONFIG_NAMESPACE", "backup-config")
+K8UP_B2_BUCKET = os.getenv("K8UP_B2_BUCKET", "minecrafthosting")
+K8UP_B2_ENDPOINT = os.getenv("K8UP_B2_ENDPOINT", "s3.us-west-004.backblazeb2.com")
+
+
+def setup_k8up_backup(v1: client.CoreV1Api, namespace: str):
+    """
+    Set up K8up backup resources for a new server namespace.
+    Copies secrets from backup-config namespace and creates a Schedule CR.
+    """
+    try:
+        # Copy backblaze-credentials secret
+        try:
+            source_secret = v1.read_namespaced_secret(
+                name="backblaze-credentials",
+                namespace=K8UP_BACKUP_CONFIG_NAMESPACE
+            )
+            target_secret = client.V1Secret(
+                metadata=client.V1ObjectMeta(name="backblaze-credentials"),
+                data=source_secret.data,
+                type=source_secret.type
+            )
+            v1.create_namespaced_secret(namespace=namespace, body=target_secret)
+            logger.info(f"Copied backblaze-credentials to {namespace}")
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.warning(f"backblaze-credentials not found in {K8UP_BACKUP_CONFIG_NAMESPACE}")
+                return
+            elif e.status != 409:  # Ignore if already exists
+                raise
+
+        # Copy restic-repo-password secret
+        try:
+            source_secret = v1.read_namespaced_secret(
+                name="restic-repo-password",
+                namespace=K8UP_BACKUP_CONFIG_NAMESPACE
+            )
+            target_secret = client.V1Secret(
+                metadata=client.V1ObjectMeta(name="restic-repo-password"),
+                data=source_secret.data,
+                type=source_secret.type
+            )
+            v1.create_namespaced_secret(namespace=namespace, body=target_secret)
+            logger.info(f"Copied restic-repo-password to {namespace}")
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.warning(f"restic-repo-password not found in {K8UP_BACKUP_CONFIG_NAMESPACE}")
+                return
+            elif e.status != 409:  # Ignore if already exists
+                raise
+
+        # Create K8up Schedule using Custom Objects API
+        custom_api = client.CustomObjectsApi()
+        schedule = {
+            "apiVersion": "k8up.io/v1",
+            "kind": "Schedule",
+            "metadata": {
+                "name": "minecraft-backup",
+                "namespace": namespace
+            },
+            "spec": {
+                "podSecurityContext": {
+                    "runAsUser": 1000,  # Run as minecraft user to read all files
+                    "fsGroup": 1000
+                },
+                "backend": {
+                    "repoPasswordSecretRef": {
+                        "name": "restic-repo-password",
+                        "key": "password"
+                    },
+                    "s3": {
+                        "endpoint": f"https://{K8UP_B2_ENDPOINT}",
+                        "bucket": K8UP_B2_BUCKET,
+                        "accessKeyIDSecretRef": {
+                            "name": "backblaze-credentials",
+                            "key": "username"
+                        },
+                        "secretAccessKeySecretRef": {
+                            "name": "backblaze-credentials",
+                            "key": "password"
+                        }
+                    }
+                },
+                "backup": {
+                    "schedule": "0 3 * * *",  # Daily at 3 AM UTC
+                    "keepJobs": 3,
+                    "failedJobsHistoryLimit": 2,
+                    "successfulJobsHistoryLimit": 2
+                },
+                "prune": {
+                    "schedule": "0 4 * * 0",  # Weekly on Sunday at 4 AM
+                    "retention": {
+                        "keepLast": 5,
+                        "keepDaily": 7,
+                        "keepWeekly": 4
+                    }
+                },
+                "check": {
+                    "schedule": "0 5 1 * *"  # Monthly on 1st at 5 AM
+                }
+            }
+        }
+
+        try:
+            custom_api.create_namespaced_custom_object(
+                group="k8up.io",
+                version="v1",
+                namespace=namespace,
+                plural="schedules",
+                body=schedule
+            )
+            logger.info(f"Created K8up Schedule in {namespace}")
+        except client.exceptions.ApiException as e:
+            if e.status != 409:  # Ignore if already exists
+                raise
+            logger.info(f"K8up Schedule already exists in {namespace}")
+
+    except Exception as e:
+        # Log error but don't fail server creation
+        logger.error(f"Failed to set up K8up backup for {namespace}: {e}")
+
+
 @app.post("/gameserver", response_model=GameServerResponse)
 def create_game_server(
     game: str = "minecraft",
@@ -87,11 +210,16 @@ def create_game_server(
     # Create Namespace
     # ---------------------------
     ns_body = client.V1Namespace(
-        metadata=client.V1ObjectMeta(name=namespace)
+        metadata=client.V1ObjectMeta(
+            name=namespace,
+            labels={"backup": "minecraft"}
+        )
     )
 
     try:
         v1.create_namespace(ns_body)
+        # Set up K8up backup for the new namespace
+        setup_k8up_backup(v1, namespace)
     except client.exceptions.ApiException as e:
         if e.status != 409:
             raise
@@ -101,7 +229,10 @@ def create_game_server(
     # ---------------------------
     pvc_name = f"{game}-data"
     pvc = client.V1PersistentVolumeClaim(
-        metadata=client.V1ObjectMeta(name=pvc_name),
+        metadata=client.V1ObjectMeta(
+            name=pvc_name,
+            labels={"backup": "minecraft", "app": game}
+        ),
         spec=client.V1PersistentVolumeClaimSpec(
             access_modes=["ReadWriteOnce"],
             resources=client.V1VolumeResourceRequirements(
@@ -181,7 +312,10 @@ echo "Paper Velocity config written"
     )
 
     template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels={"app": game}),
+        metadata=client.V1ObjectMeta(
+            labels={"app": game},
+            annotations={"k8up.io/backup": "true"}  # Enable K8up backups for this pod's volumes
+        ),
         spec=client.V1PodSpec(
             init_containers=[init_container],
             containers=[container],
