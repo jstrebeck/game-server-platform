@@ -20,12 +20,12 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg">
 </p>
 
-> **About this repo.** I built this platform to launch as a commercial product, **MinecraftHosting.gg** (internal codename *Watch2Play*, which is why you'll see `watch2play` in resource names). I've since decided not to take it to market, so I'm publishing it as a portfolio piece. It ran on my own bare-metal Kubernetes cluster in my homelab ([see below](#the-homelab-behind-it)). The code and manifests are shown as they were built, and the [roadmap](#what-id-do-next) says honestly what I'd harden before running it at scale.
+> **About this project.** I built this platform to push my DevOps and platform engineering skills end to end. Instead of stopping at a toy cluster demo, I set out to build something shaped like a real SaaS: multi-tenant provisioning through the Kubernetes API, custom proxy routing, observability, and all the product plumbing around it (auth, billing, email, support and admin tooling). It's branded **MinecraftHosting.gg** (internal codename *Watch2Play*, which is why you'll see `watch2play` in resource names) and runs on my own bare-metal Kubernetes cluster in my homelab ([see below](#the-homelab-behind-it)). The [roadmap](#what-id-do-next) says honestly what I'd harden before running it at scale.
 
 <p align="center">
   <img src="img/site.png" alt="Customer dashboard showing a running server and its connection hostname" width="800">
   <br>
-  <sub>The customer dashboard: a provisioned server, its live status, and the per-tenant hostname players connect to.</sub>
+  <sub>The customer dashboard: a provisioned server, its live status, and the per-tenant hostname players connect to (a subdomain of whatever base domain the platform is configured with).</sub>
 </p>
 
 ---
@@ -156,7 +156,7 @@ flowchart LR
     CM -.-> V
     BE -->|PromQL| PROM
 
-    P -->|alice.infinabyte.com| TCP --> V
+    P -->|alice.play.example.com| TCP --> V
     V -->|forced host routing<br/>ClusterIP DNS| MA
     V --> MB
     MA --- PVA
@@ -195,9 +195,9 @@ sequenceDiagram
     BE->>K: create Service minecraft-service (ClusterIP)
     BE->>K: patch ConfigMap velocity-config (+server, +forced host)
     BE->>K: exec into Velocity pod: write velocity.toml, `velocity reload`
-    K-->>V: routes <user>.infinabyte.com → minecraft-service.server-<user>.svc
+    K-->>V: routes <user>.play.example.com → minecraft-service.server-<user>.svc
     BE-->>FE: { hostname, port, status }
-    FE-->>User: Connect to <user>.infinabyte.com
+    FE-->>User: Connect to <user>.play.example.com
 ```
 
 What's worth calling out in [`backend/main.py`](backend/main.py):
@@ -225,8 +225,8 @@ What's worth calling out in [`backend/main.py`](backend/main.py):
 
 Giving every server its own `LoadBalancer` burns a public IP per customer and spreads the attack surface across dozens of endpoints. An early iteration did exactly that. Instead, all servers sit behind a single [Velocity](https://papermc.io/software/velocity) proxy on port 25565:
 
-1. **Wildcard DNS** sends `*.infinabyte.com` to TCPShield, which forwards to the Velocity `LoadBalancer` service.
-2. The Minecraft handshake includes the hostname the player typed. Velocity's **`[forced-hosts]`** table maps `alice.infinabyte.com` → server `user-alice`.
+1. **Wildcard DNS** for the configured base domain (`MC_HOSTNAME_BASE`, e.g. `*.play.example.com`) points to TCPShield, which forwards to the Velocity `LoadBalancer` service.
+2. The Minecraft handshake includes the hostname the player typed. Velocity's **`[forced-hosts]`** table maps `alice.play.example.com` → server `user-alice`.
 3. `user-alice` resolves to `minecraft-service.server-alice.svc.cluster.local:25565`, which uses plain cluster DNS across namespaces.
 
 ### Dynamic registration with zero-downtime reloads
@@ -283,7 +283,7 @@ Customers get a real control panel, and every feature is backed by the Kubernete
 
 ## A complete product, not just infrastructure
 
-The platform was built to take real customers' money, so it covers the whole customer lifecycle:
+Infrastructure alone doesn't make a platform, so I built out the whole customer lifecycle to production standards, with the same integrations a commercial hosting service would need:
 
 ### Identity and access (Auth0)
 - OIDC login through `@auth0/nextjs-auth0` middleware. The backend validates **RS256 JWTs against a cached JWKS**.
