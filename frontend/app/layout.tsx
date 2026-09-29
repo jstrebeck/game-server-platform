@@ -79,11 +79,6 @@ const jsonLd = {
     "priceValidUntil": "2026-12-31",
     "availability": "https://schema.org/InStock"
   },
-  "aggregateRating": {
-    "@type": "AggregateRating",
-    "ratingValue": "4.8",
-    "ratingCount": "150"
-  },
   "provider": {
     "@type": "Organization",
     "name": "MinecraftHosting.gg",

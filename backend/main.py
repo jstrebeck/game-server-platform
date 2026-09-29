@@ -35,6 +35,10 @@ load_dotenv()
 # Players connect via {user_id}.{MC_HOSTNAME_BASE}
 MC_HOSTNAME_BASE = os.getenv("MC_HOSTNAME_BASE", "infinabyte.com")
 
+# Shared secret between Velocity and each Paper server (modern player-info forwarding).
+# Sourced from the velocity-secret Secret and copied into each server namespace.
+VELOCITY_FORWARDING_SECRET = os.getenv("VELOCITY_FORWARDING_SECRET", "")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,6 +101,21 @@ def create_game_server(
             raise
 
     # ---------------------------
+    # Create Velocity forwarding Secret
+    # ---------------------------
+    # secretKeyRef can't cross namespaces, so each server namespace gets its own copy
+    forwarding_secret = client.V1Secret(
+        metadata=client.V1ObjectMeta(name="velocity-forwarding"),
+        string_data={"secret": VELOCITY_FORWARDING_SECRET},
+    )
+
+    try:
+        v1.create_namespaced_secret(namespace=namespace, body=forwarding_secret)
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    # ---------------------------
     # Create PersistentVolumeClaim
     # ---------------------------
     pvc_name = f"{game}-data"
@@ -125,16 +144,24 @@ def create_game_server(
         image="busybox:latest",
         command=["sh", "-c", """
 mkdir -p /data/config
-cat > /data/config/paper-global.yml << 'EOF'
+cat > /data/config/paper-global.yml << EOF
 _version: 29
 proxies:
   velocity:
     enabled: true
     online-mode: true
-    secret: REDACTED
+    secret: ${VELOCITY_SECRET}
 EOF
 echo "Paper Velocity config written"
 """],
+        env=[
+            client.V1EnvVar(
+                name="VELOCITY_SECRET",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(name="velocity-forwarding", key="secret")
+                ),
+            )
+        ],
         volume_mounts=[
             client.V1VolumeMount(
                 name="game-data",

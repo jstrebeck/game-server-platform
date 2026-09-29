@@ -6,7 +6,8 @@ set -e
 NAMESPACE="watch2play"
 CONFIGMAP="velocity-config"
 DEPLOYMENT="velocity"
-VELOCITY_YAML="/home/vba2/git/Watch2Play/deployment/velocity.yaml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELOCITY_YAML="$SCRIPT_DIR/../deployment/velocity.yaml"
 
 echo "=== Velocity Config Update Script ==="
 
@@ -61,14 +62,9 @@ $host_line")
     done <<< "$FORCED_HOSTS"
 fi
 
-# Get the rcon.yml from the original velocity.yaml
-RCON_CONFIG=$(grep -A4 'rcon.yml: |' /home/vba2/git/Watch2Play/deployment/velocity.yaml | tail -4 | sed 's/^    //')
-
 # Update the configmap with the merged config
 kubectl create configmap $CONFIGMAP \
     --from-literal="velocity.toml=$NEW_CONFIG" \
-    --from-literal="forwarding.secret=REDACTED" \
-    --from-literal="rcon.yml=$RCON_CONFIG" \
     -n $NAMESPACE \
     --dry-run=client -o yaml | kubectl apply -f -
 

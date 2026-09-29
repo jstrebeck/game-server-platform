@@ -96,5 +96,6 @@ All state is managed through custom hooks in `app/hooks/`. Each hook encapsulate
 
 Defined in `app/lib/constants.ts`:
 - 2GB RAM - $4.99/mo
-- 4GB RAM - $7.99/mo
-- 8GB RAM - $14.99/mo
+- 4GB RAM - $9.99/mo
+- 6GB RAM - $14.99/mo
+- 8GB RAM - $19.99/mo

@@ -36,6 +36,12 @@ spec:
           value: "https://minecrafthosting.gg, https://static.cloudflareinsights.com"
         - name: MC_HOSTNAME_BASE
           value: "infinabyte.com"
+        # Shared with the Velocity proxy; copied into each server namespace
+        - name: VELOCITY_FORWARDING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: velocity-secret
+              key: forwarding-secret
         # Auth0 Management API credentials (for admin impersonation)
         - name: AUTH0_MGMT_CLIENT_ID
           valueFrom:
@@ -135,6 +141,9 @@ rules:
 - apiGroups: [""]
   resources: ["persistentvolumeclaims"]
   verbs: ["create", "delete", "get", "list"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create"]
 - apiGroups: [""]
   resources: ["configmaps"]
   verbs: ["get", "list", "update", "patch"]

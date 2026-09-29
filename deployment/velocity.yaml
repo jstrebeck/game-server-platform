@@ -51,12 +51,8 @@ data:
     map = "Velocity"
     show-plugins = false
 
-  forwarding.secret: "REDACTED"
-  rcon.yml: |
-    enable: true
-    host: 127.0.0.1
-    port: 25575
-    password: "REDACTED"
+# forwarding.secret and the RCON password live in the velocity-secret Secret
+# (see secret-template.yaml) and are written into /server by the init container.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -85,10 +81,31 @@ spec:
       initContainers:
       - name: copy-config
         image: busybox:latest
-        command: ['sh', '-c', 'cp /config/velocity.toml /server/ && cp /config/forwarding.secret /server/ && mkdir -p /server/plugins/velocircon && cp /config/rcon.yml /server/plugins/velocircon/']
+        command:
+        - sh
+        - -c
+        - |
+          cp /config/velocity.toml /server/
+          cp /secrets/forwarding-secret /server/forwarding.secret
+          mkdir -p /server/plugins/velocircon
+          cat > /server/plugins/velocircon/rcon.yml << EOF
+          enable: true
+          host: 127.0.0.1
+          port: 25575
+          password: "${RCON_PASSWORD}"
+          EOF
+        env:
+        - name: RCON_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: velocity-secret
+              key: rcon-password
         volumeMounts:
         - name: config
           mountPath: /config
+        - name: secrets
+          mountPath: /secrets
+          readOnly: true
         - name: server-data
           mountPath: /server
       containers:
@@ -105,7 +122,10 @@ spec:
         - name: PLUGINS
           value: "https://github.com/TCPShield/RealIP/releases/download/2.8.1/TCPShield-2.8.1.jar,https://cdn.modrinth.com/data/KkmSfl3v/versions/fSM522rY/Velocircon-1.0.5.jar"
         - name: RCON_PASSWORD
-          value: "REDACTED"
+          valueFrom:
+            secretKeyRef:
+              name: velocity-secret
+              key: rcon-password
         - name: ICON
           value: "https://minecrafthosting.gg/server-icon.png"
         volumeMounts:
@@ -116,6 +136,9 @@ spec:
       - name: config
         configMap:
           name: velocity-config
+      - name: secrets
+        secret:
+          secretName: velocity-secret
       - name: server-data
         emptyDir: {}
 ---
